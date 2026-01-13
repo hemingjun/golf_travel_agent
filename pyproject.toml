@@ -1,0 +1,22 @@
+[project]
+name = "golf-travel-agent"
+version = "0.1.0"
+description = "高尔夫旅行智能助手"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-openai>=1.1.7",
+    "langgraph>=1.0.5",
+    "notion-client>=2.7.0",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+]
+
+[project.scripts]
+golf-travel-agent = "main:main"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
