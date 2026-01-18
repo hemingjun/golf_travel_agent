@@ -7,7 +7,7 @@
 - Python 3.11+
 - uv (包管理)
 - LangGraph (Agent 框架)
-- LangChain OpenAI (LLM 集成)
+- LangChain Google Gemini (LLM 集成，Pro + Flash 双模型)
 - Pydantic (数据模型)
 
 ## 项目结构
@@ -23,6 +23,8 @@ src/golf_agent/
 │   ├── hotel.py
 │   ├── logistics.py
 │   ├── itinerary.py
+│   ├── customer.py
+│   ├── weather.py
 │   └── responder.py
 ├── tools/           # 工具函数
 └── notion/          # Notion API 封装
@@ -31,13 +33,18 @@ src/golf_agent/
 ## 运行方式
 ```bash
 # 设置环境变量
-export OPENAI_API_KEY=xxx
+export GOOGLE_API_KEY=xxx
 export NOTION_TOKEN=xxx
 export NOTION_DB_GOLF=xxx
 export NOTION_DB_HOTEL=xxx
 export NOTION_DB_LOGISTIC=xxx
 export NOTION_DB_ITINERARY=xxx
+export NOTION_DB_CUSTOMER=xxx
+export OPENWEATHER_API_KEY=xxx  # 天气 API (可选)
 
-# 运行
-uv run python main.py --trip-id <行程ID>
+# 管理员模式运行
+uv run python main.py -t <行程ID> -u admin
+
+# 客户模式运行（user-id 为客户 page_id）
+uv run python main.py -t <行程ID> -u <客户PageID>
 ```

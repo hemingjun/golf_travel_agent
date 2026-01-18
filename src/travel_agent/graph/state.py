@@ -58,9 +58,15 @@ def merge_trip_data(current: dict, update: dict) -> dict:
     return merged
 
 
-def increment_counter(current: int, update: int) -> int:
-    """迭代计数器 reducer"""
-    return (current or 0) + (update or 0)
+def reset_or_increment(current: int, update: int) -> int:
+    """迭代计数器 reducer - 支持重置
+
+    - update = 0: 重置为 0（新对话开始）
+    - update > 0: 累加（正常迭代）
+    """
+    if update == 0:
+        return 0  # 重置
+    return (current or 0) + update  # 累加
 
 
 # ==================== 路由类型 ====================
@@ -70,9 +76,14 @@ RouteTarget = Literal[
     "hotel_agent",
     "logistics_agent",
     "itinerary_agent",
-    "final_responder",
-    "END",
+    "customer_agent",
+    "weather_agent",
+    "analyst",
 ]
+
+# ==================== 分析策略类型 ====================
+
+AnalysisStrategy = Literal["TIME_FOCUSED", "SPACE_FOCUSED", "GENERAL"]
 
 
 # ==================== 状态 Schema ====================
@@ -87,6 +98,12 @@ class GraphState(TypedDict):
     # 行程上下文
     trip_id: str
 
+    # 当前登录客户 ID (page_id)
+    customer_id: str
+
+    # 当前系统日期 (启动时自动设置，格式：2026年01月16日)
+    current_date: str
+
     # 结构化数据暂存区 (增量合并)
     trip_data: Annotated[dict, merge_trip_data]
 
@@ -95,4 +112,13 @@ class GraphState(TypedDict):
     supervisor_instructions: str
 
     # 迭代计数
-    iteration_count: Annotated[int, increment_counter]
+    iteration_count: Annotated[int, reset_or_increment]
+
+    # 分析策略 (由 Supervisor 设定)
+    analysis_strategy: AnalysisStrategy
+
+    # 分析报告 (由 Analyst 生成)
+    analysis_report: str
+
+    # Planner 输出的精炼计划 (结构化 JSON)
+    refined_plan: str

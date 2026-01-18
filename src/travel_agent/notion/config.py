@@ -34,6 +34,7 @@ def get_databases() -> dict[str, str]:
         "高尔夫组件": _get_db_id("NOTION_DB_GOLF", "高尔夫组件"),
         "酒店组件": _get_db_id("NOTION_DB_HOTEL", "酒店组件"),
         "物流组件": _get_db_id("NOTION_DB_LOGISTIC", "物流组件"),
+        "客户": _get_db_id("NOTION_DB_CUSTOMER", "客户"),
     }
 
 
@@ -127,6 +128,20 @@ SCHEMAS = {
         "关联行程": "relation",
         "客户": "relation",
         "备注": "rich_text",
+    },
+    # 客户 - 实际名称: 人员数据库_客户
+    "客户": {
+        "Name": "title",
+        "国家(必填)": "relation",
+        "差点": "number",
+        "饮食习惯": "rich_text",
+        "服务需求": "rich_text",
+        "亲友": "relation",
+        "参加的行程": "relation",
+        "会员类型(必填)": "multi_select",
+        "备注": "rich_text",
+        # formula 字段（只读）
+        "page_id": "formula",
     },
 }
 

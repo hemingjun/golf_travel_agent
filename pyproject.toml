@@ -5,7 +5,7 @@ description = "高尔夫旅行智能助手"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "langchain-openai>=1.1.7",
+    "langchain-google-genai>=2.0.0",
     "langgraph>=1.0.5",
     "notion-client>=2.7.0",
     "pydantic>=2.12.5",

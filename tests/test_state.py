@@ -3,7 +3,7 @@
 import sys
 sys.path.insert(0, "src")
 
-from golf_agent.graph.state import merge_trip_data
+from travel_agent.graph.state import merge_trip_data
 
 
 def test_merge_update_existing():
