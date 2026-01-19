@@ -17,6 +17,7 @@ from ..agents.customer import customer_agent
 from ..agents.weather import weather_agent
 from ..agents.analyst import analyst_node
 from ..agents.responder import final_responder
+from ..agents.search import search_agent
 
 
 def route_next(state: GraphState) -> str:
@@ -64,6 +65,7 @@ def create_graph(
     graph.add_node("itinerary_agent", itinerary_agent)
     graph.add_node("customer_agent", customer_agent)
     graph.add_node("weather_agent", partial(weather_agent, llm=fast_llm))
+    graph.add_node("search_agent", partial(search_agent, llm=fast_llm))
 
     # 设置入口为 Planner
     graph.set_entry_point("planner")
@@ -82,12 +84,13 @@ def create_graph(
             "itinerary_agent": "itinerary_agent",
             "customer_agent": "customer_agent",
             "weather_agent": "weather_agent",
+            "search_agent": "search_agent",
             "analyst": "analyst",
         },
     )
 
     # Worker -> Supervisor 回环
-    for worker in ["golf_agent", "hotel_agent", "logistics_agent", "itinerary_agent", "customer_agent", "weather_agent"]:
+    for worker in ["golf_agent", "hotel_agent", "logistics_agent", "itinerary_agent", "customer_agent", "weather_agent", "search_agent"]:
         graph.add_edge(worker, "supervisor")
 
     # Analyst -> Final Responder（固定边）

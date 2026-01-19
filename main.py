@@ -10,7 +10,7 @@ load_dotenv()
 sys.path.insert(0, "src")
 
 from travel_agent import create_graph
-from travel_agent.config import set_debug_mode
+from travel_agent.debug import set_debug_mode
 from travel_agent.tools.customer import get_customer_info, validate_customer_access
 
 

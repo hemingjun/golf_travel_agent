@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage
 
 from ..graph.state import GraphState
 from ..tools.golf import get_golf_bookings
+from ..debug import print_node_enter, print_routing, print_trip_data_update
 
 
 def _extract_text(value) -> str:
@@ -39,6 +40,9 @@ def golf_agent(state: GraphState) -> dict:
     - trip_data: 只包含本 Agent 负责的字段（标准化英文 Key）
     - messages: 添加进度消息通知 Supervisor
     """
+    # 节点入口标识
+    print_node_enter("golf_agent")
+
     trip_id = state["trip_id"]
 
     # 调用工具获取数据
@@ -86,6 +90,10 @@ def golf_agent(state: GraphState) -> dict:
         summary = "[Golf Agent] 未找到高尔夫预订记录"
 
     progress_msg = AIMessage(content=summary, name="golf_agent")
+
+    # 展示数据更新
+    print_trip_data_update("golf_bookings", golf_bookings_formatted)
+    print_routing("golf_agent", "supervisor", f"获取 {len(bookings)} 条高尔夫预订")
 
     return {
         "trip_data": trip_data_update,

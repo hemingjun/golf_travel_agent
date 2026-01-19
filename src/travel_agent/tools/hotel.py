@@ -1,6 +1,32 @@
 """酒店相关工具"""
 
-from ..notion import NotionClient, DATABASES
+from ..notion import NotionClient, DATABASES, SCHEMAS, transform_props
+from ..debug import debug_print
+
+
+def get_hotel_details(hotel_id: str) -> dict | None:
+    """根据酒店 ID 获取酒店详细信息
+
+    通过酒店页面 ID 查询酒店主数据库，获取完整酒店信息。
+
+    Args:
+        hotel_id: 酒店页面 ID
+
+    Returns:
+        酒店详情字典（英文 key），包含名称、地址、电话等；失败返回 None
+    """
+    try:
+        client = NotionClient()
+        page = client.get_page(hotel_id)
+        if not page:
+            return None
+
+        props = page.get("properties", {})
+        # 使用 transform_props 自动转换字段名（中文 → 英文）
+        return transform_props(props, SCHEMAS["酒店"])
+    except Exception as e:
+        debug_print(f"[Hotel Tools] 获取酒店详情失败: {e}")
+        return None
 
 
 def get_hotel_bookings(trip_id: str, customer_id: str | None = None) -> list[dict]:

@@ -70,102 +70,131 @@ class _DatabasesProxy:
 DATABASES = _DatabasesProxy()
 
 # 数据库 Schema 定义（基于实际数据库结构）
+# 格式: {"中文字段名": {"type": "notion类型", "key": "英文业务key"}}
+# key 用于统一的字段映射，type 用于 Notion API 交互
 SCHEMAS = {
     # 行程组件 - 实际名称: 行程数据库_行程事件
     "行程组件": {
-        "标题": "title",
-        "日期": "date",
-        "事件类型": "select",
-        "事件内容": "rich_text",
-        "行程": "relation",
-        "球场": "relation",
-        "酒店": "relation",
-        "Teetime": "rich_text",
-        "行程时长": "rich_text",
-        "天气": "rich_text",
-        "是否提醒": "checkbox",
-        "提醒状态": "select",
+        "标题": {"type": "title", "key": "event_title"},
+        "日期": {"type": "date", "key": "event_date"},
+        "事件类型": {"type": "select", "key": "event_type"},
+        "事件内容": {"type": "rich_text", "key": "event_content"},
+        "行程": {"type": "relation", "key": "trip_id"},
+        "球场": {"type": "relation", "key": "course_id"},
+        "酒店": {"type": "relation", "key": "hotel_id"},
+        "Teetime": {"type": "rich_text", "key": "tee_time"},
+        "行程时长": {"type": "rich_text", "key": "duration"},
+        "天气": {"type": "rich_text", "key": "weather"},
+        "是否提醒": {"type": "checkbox", "key": "reminder_enabled"},
+        "提醒状态": {"type": "select", "key": "reminder_status"},
     },
     # 高尔夫组件 - 实际名称: 行程数据库_高尔夫组件
     "高尔夫组件": {
-        "名称": "title",
-        "PlayDate": "date",
-        "Teetime": "rich_text",
-        "关联行程": "relation",
-        "关联球场": "relation",
-        "球手": "relation",
-        "Notes": "rich_text",
-        "Caddie": "checkbox",
-        "Buggie": "checkbox",
+        "名称": {"type": "title", "key": "name"},
+        "PlayDate": {"type": "date", "key": "play_date"},
+        "Teetime": {"type": "rich_text", "key": "tee_time"},
+        "关联行程": {"type": "relation", "key": "trip_id"},
+        "关联球场": {"type": "relation", "key": "course_id"},
+        "球手": {"type": "relation", "key": "players"},
+        "Notes": {"type": "rich_text", "key": "notes"},
+        "Caddie": {"type": "checkbox", "key": "caddie"},
+        "Buggie": {"type": "checkbox", "key": "buggy"},
         # rollup 字段（只读）
-        "中文名": "rollup",
-        "地址": "rollup",
-        "电话": "rollup",
+        "中文名": {"type": "rollup", "key": "course_name_cn", "readonly": True},
+        "地址": {"type": "rollup", "key": "course_address", "readonly": True},
+        "电话": {"type": "rollup", "key": "course_phone", "readonly": True},
     },
     # 酒店组件 - 实际名称: 行程数据库_酒店组件
     "酒店组件": {
-        "名称": "title",
-        "入住日期": "date",
-        "退房日期": "date",
-        "关联行程": "relation",
-        "酒店": "relation",
-        "客户": "relation",
-        "房型": "select",
-        "房间等级": "select",
-        "景观": "select",
-        "备注": "rich_text",
-        "confirmation #": "rich_text",
+        "名称": {"type": "title", "key": "name"},
+        "入住日期": {"type": "date", "key": "check_in"},
+        "退房日期": {"type": "date", "key": "check_out"},
+        "关联行程": {"type": "relation", "key": "trip_id"},
+        "酒店": {"type": "relation", "key": "hotel_id"},
+        "客户": {"type": "relation", "key": "customer_id"},
+        "房型": {"type": "select", "key": "room_type"},
+        "房间等级": {"type": "select", "key": "room_category"},
+        "景观": {"type": "select", "key": "view"},
+        "备注": {"type": "rich_text", "key": "notes"},
+        "confirmation #": {"type": "rich_text", "key": "confirmation_number"},
+    },
+    # 酒店主数据库 - 资料数据库_酒店
+    "酒店": {
+        "英文名": {"type": "title", "key": "name_en"},
+        "中文名": {"type": "rich_text", "key": "name_cn"},
+        "地址": {"type": "rich_text", "key": "address"},
+        "电话": {"type": "phone_number", "key": "phone"},
+        "早餐信息": {"type": "rich_text", "key": "breakfast"},
+        "入住时间": {"type": "rich_text", "key": "check_in_time"},
+        "退房时间": {"type": "rich_text", "key": "check_out_time"},
+        "星级": {"type": "select", "key": "star_rating"},
+        "官网": {"type": "url", "key": "website"},
+        "入住须知": {"type": "rich_text", "key": "check_in_notes"},
+        "酒店简介": {"type": "rich_text", "key": "description"},
+        "酒店备注": {"type": "rich_text", "key": "remarks"},
     },
     # 物流组件 - 实际名称: 行程数据库_物流组件
     "物流组件": {
-        "名称": "title",
-        "日期": "date",
-        "出发时间": "rich_text",
-        "目的地": "rich_text",
-        "车型": "rich_text",
-        "人数": "rich_text",
-        "行程时长(分钟)": "number",
-        "关联行程": "relation",
-        "客户": "relation",
-        "备注": "rich_text",
+        "名称": {"type": "title", "key": "name"},
+        "日期": {"type": "date", "key": "transport_date"},
+        "出发时间": {"type": "rich_text", "key": "departure_time"},
+        "目的地": {"type": "rich_text", "key": "destination"},
+        "车型": {"type": "rich_text", "key": "vehicle_type"},
+        "人数": {"type": "rich_text", "key": "passenger_count"},
+        "行程时长(分钟)": {"type": "number", "key": "duration_minutes"},
+        "关联行程": {"type": "relation", "key": "trip_id"},
+        "客户": {"type": "relation", "key": "customer_id"},
+        "备注": {"type": "rich_text", "key": "notes"},
     },
     # 客户 - 实际名称: 人员数据库_客户
     "客户": {
-        "Name": "title",
-        "国家(必填)": "relation",
-        "差点": "number",
-        "饮食习惯": "rich_text",
-        "服务需求": "rich_text",
-        "亲友": "relation",
-        "参加的行程": "relation",
-        "会员类型(必填)": "multi_select",
-        "备注": "rich_text",
+        "Name": {"type": "title", "key": "name"},
+        "国家(必填)": {"type": "relation", "key": "country"},
+        "差点": {"type": "number", "key": "handicap"},
+        "饮食习惯": {"type": "rich_text", "key": "dietary_preferences"},
+        "服务需求": {"type": "rich_text", "key": "service_requirements"},
+        "亲友": {"type": "relation", "key": "relatives"},
+        "参加的行程": {"type": "relation", "key": "trips"},
+        "会员类型(必填)": {"type": "multi_select", "key": "membership_type"},
+        "备注": {"type": "rich_text", "key": "notes"},
         # formula 字段（只读）
-        "page_id": "formula",
+        "page_id": {"type": "formula", "key": "page_id", "readonly": True},
     },
 }
 
-# 可写字段（排除 rollup/formula 等只读字段）
-WRITABLE_FIELDS = {
-    "行程组件": [
-        "标题", "日期", "事件类型", "事件内容",
-        "行程", "球场", "酒店", "Teetime",
-        "行程时长", "天气", "是否提醒", "提醒状态",
-    ],
-    "高尔夫组件": [
-        "名称", "PlayDate", "Teetime",
-        "关联行程", "关联球场", "球手",
-        "Notes", "Caddie", "Buggie",
-    ],
-    "酒店组件": [
-        "名称", "入住日期", "退房日期",
-        "关联行程", "酒店", "客户",
-        "房型", "房间等级", "景观",
-        "备注", "confirmation #",
-    ],
-    "物流组件": [
-        "名称", "日期", "出发时间", "目的地",
-        "车型", "人数", "行程时长(分钟)",
-        "关联行程", "客户", "备注",
-    ],
-}
+
+def get_field_type(db_name: str, field_name: str) -> str | None:
+    """获取字段的 Notion 类型"""
+    schema = SCHEMAS.get(db_name, {})
+    field_def = schema.get(field_name)
+    if isinstance(field_def, dict):
+        return field_def.get("type")
+    return field_def  # 兼容旧格式
+
+
+def get_field_key(db_name: str, field_name: str) -> str:
+    """获取字段的英文 key，如果没有定义则返回原字段名"""
+    schema = SCHEMAS.get(db_name, {})
+    field_def = schema.get(field_name)
+    if isinstance(field_def, dict):
+        return field_def.get("key", field_name)
+    return field_name
+
+def _build_writable_fields() -> dict[str, list[str]]:
+    """从 SCHEMAS 自动生成可写字段列表（排除 readonly 字段）"""
+    result = {}
+    for db_name, schema in SCHEMAS.items():
+        writable = []
+        for field_name, field_def in schema.items():
+            if isinstance(field_def, dict):
+                if not field_def.get("readonly"):
+                    writable.append(field_name)
+            else:
+                writable.append(field_name)
+        if writable:
+            result[db_name] = writable
+    return result
+
+
+# 可写字段（自动从 SCHEMAS 生成，排除 rollup/formula 等只读字段）
+WRITABLE_FIELDS = _build_writable_fields()

@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage
 
 from ..graph.state import GraphState
 from ..tools.logistics import get_logistics_arrangements
+from ..debug import print_node_enter, print_routing, print_trip_data_update
 
 
 def logistics_agent(state: GraphState) -> dict:
@@ -13,6 +14,9 @@ def logistics_agent(state: GraphState) -> dict:
     - trip_data: 只包含本 Agent 负责的字段（英文 Key）
     - messages: 添加进度消息通知 Supervisor
     """
+    # 节点入口标识
+    print_node_enter("logistics_agent")
+
     trip_id = state["trip_id"]
 
     # 调用工具获取数据
@@ -62,6 +66,10 @@ def logistics_agent(state: GraphState) -> dict:
         summary = "[Logistics Agent] 暂无物流安排数据"
 
     progress_msg = AIMessage(content=summary, name="logistics_agent")
+
+    # 展示数据更新
+    print_trip_data_update("logistics", logistics_formatted)
+    print_routing("logistics_agent", "supervisor", f"获取 {len(arrangements)} 条物流安排")
 
     return {
         "trip_data": trip_data_update,

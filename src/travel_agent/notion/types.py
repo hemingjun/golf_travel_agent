@@ -195,6 +195,14 @@ def build_property(prop_type: str, value: Any) -> dict:
             return {prop_type: value}
 
 
+def _get_field_type(schema: dict, field_name: str) -> str | None:
+    """从 schema 获取字段类型（兼容新旧格式）"""
+    field_def = schema.get(field_name)
+    if isinstance(field_def, dict):
+        return field_def.get("type")
+    return field_def
+
+
 def parse_page_properties(properties: dict, schema: dict | None = None) -> dict:
     """解析页面的所有属性
 
@@ -203,13 +211,39 @@ def parse_page_properties(properties: dict, schema: dict | None = None) -> dict:
         schema: 可选的数据库 schema，用于获取属性类型
 
     Returns:
-        解析后的属性字典
+        解析后的属性字典（中文 key）
     """
     result = {}
     for name, prop_data in properties.items():
         prop_type = prop_data.get("type")
         if prop_type:
             result[name] = parse_property(prop_type, prop_data)
+    return result
+
+
+def transform_props(props: dict, schema: dict) -> dict:
+    """将 Notion 属性转换为业务字典（中文 key → 英文 key）
+
+    这是核心的字段映射函数，根据 schema 中的 key 定义进行转换。
+
+    Args:
+        props: 已解析的属性字典（中文 key）
+        schema: 数据库 schema，包含 {"中文名": {"type": "...", "key": "english_key"}}
+
+    Returns:
+        转换后的业务字典（英文 key），值为空时返回空字符串或默认值
+    """
+    result = {}
+    for notion_name, value in props.items():
+        if notion_name in schema:
+            field_def = schema[notion_name]
+            if isinstance(field_def, dict) and "key" in field_def:
+                key = field_def["key"]
+                # 确保值不为 None
+                result[key] = value if value is not None else ""
+            else:
+                # 兼容旧格式：没有 key 定义时使用原字段名
+                result[notion_name] = value if value is not None else ""
     return result
 
 
@@ -226,6 +260,7 @@ def build_page_properties(data: dict, schema: dict) -> dict:
     properties = {}
     for name, value in data.items():
         if name in schema:
-            prop_type = schema[name]
-            properties[name] = build_property(prop_type, value)
+            prop_type = _get_field_type(schema, name)
+            if prop_type:
+                properties[name] = build_property(prop_type, value)
     return properties

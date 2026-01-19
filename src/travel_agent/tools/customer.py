@@ -1,7 +1,7 @@
 """客户相关工具"""
 
-from ..config import debug_print
-from ..notion import NotionClient, DATABASES
+from ..debug import debug_print
+from ..notion import NotionClient, DATABASES, SCHEMAS, transform_props
 
 
 def get_customer_info(customer_id: str) -> dict | None:
@@ -11,24 +11,16 @@ def get_customer_info(customer_id: str) -> dict | None:
         customer_id: 客户 Notion Page ID
 
     Returns:
-        客户信息字典，包含全名、国家、差点、饮食习惯、服务需求等
+        客户信息字典（英文 key），包含 name、country、handicap 等
     """
     client = NotionClient()
     try:
         page = client.get_page(customer_id)
         props = page.get("properties", {})
-        return {
-            "id": page["id"],
-            "全名": props.get("Name", ""),
-            "国家": props.get("国家(必填)", []),
-            "差点": props.get("差点"),
-            "饮食习惯": props.get("饮食习惯", ""),
-            "服务需求": props.get("服务需求", ""),
-            "会员类型": props.get("会员类型(必填)", []),
-            "备注": props.get("备注", ""),
-            "亲友_ids": props.get("亲友", []),
-            "参加的行程_ids": props.get("参加的行程", []),
-        }
+        # 使用 transform_props 自动转换字段名（中文 → 英文）
+        result = transform_props(props, SCHEMAS["客户"])
+        result["id"] = page["id"]
+        return result
     except Exception as e:
         debug_print(f"[ERROR] 获取客户信息失败: {e}")
         return None
@@ -43,14 +35,15 @@ def get_customer_relatives(customer_id: str) -> list[dict]:
         customer_id: 客户 Notion Page ID
 
     Returns:
-        亲友列表（只包含基本信息）
+        亲友列表（英文 key，只包含基本信息）
     """
     # 先获取客户信息，得到亲友 ID 列表
     customer = get_customer_info(customer_id)
     if not customer:
         return []
 
-    relative_ids = customer.get("亲友_ids", [])
+    # 使用新的英文 key
+    relative_ids = customer.get("relatives", [])
     if not relative_ids:
         return []
 
@@ -61,10 +54,14 @@ def get_customer_relatives(customer_id: str) -> list[dict]:
         try:
             page = client.get_page(rel_id)
             props = page.get("properties", {})
+            # 使用 transform_props 转换
+            rel_info = transform_props(props, SCHEMAS["客户"])
+            rel_info["id"] = page["id"]
+            # 只保留基本信息
             relatives.append({
-                "id": page["id"],
-                "全名": props.get("Name", ""),
-                "差点": props.get("差点"),
+                "id": rel_info["id"],
+                "name": rel_info.get("name", ""),
+                "handicap": rel_info.get("handicap"),
             })
         except Exception as e:
             debug_print(f"[WARN] 获取亲友信息失败 {rel_id}: {e}")
@@ -81,13 +78,14 @@ def get_customer_trips(customer_id: str) -> list[dict]:
         customer_id: 客户 Notion Page ID
 
     Returns:
-        行程列表
+        行程列表（英文 key）
     """
     customer = get_customer_info(customer_id)
     if not customer:
         return []
 
-    trip_ids = customer.get("参加的行程_ids", [])
+    # 使用新的英文 key
+    trip_ids = customer.get("trips", [])
     if not trip_ids:
         return []
 
@@ -100,8 +98,8 @@ def get_customer_trips(customer_id: str) -> list[dict]:
             props = page.get("properties", {})
             trips.append({
                 "id": page["id"],
-                "名称": props.get("Name", "") or props.get("名称", ""),
-                "项目日期": props.get("项目日期"),
+                "name": props.get("Name", "") or props.get("名称", ""),
+                "date": props.get("项目日期"),
             })
         except Exception as e:
             debug_print(f"[WARN] 获取行程信息失败 {trip_id}: {e}")

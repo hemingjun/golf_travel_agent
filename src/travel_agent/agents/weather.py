@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from ..graph.state import GraphState
 from ..tools.weather import get_location_weather
+from ..debug import debug_print, print_node_enter, print_routing, print_trip_data_update
 
 
 def _parse_planner_params(state: GraphState) -> dict:
@@ -160,7 +161,11 @@ def _get_specific_weather(state: GraphState, params: dict) -> dict:
             messages.append(f"- {query_date} @ {location}: 暂无数据")
 
     summary = f"[Weather Agent] 查询结果:\n" + "\n".join(messages)
-    
+
+    # 展示数据更新
+    print_trip_data_update("weather_report", weather_reports)
+    print_routing("weather_agent", "supervisor", f"查询 {location} 天气完成")
+
     return {
         "trip_data": {"weather_report": weather_reports},
         "messages": [AIMessage(content=summary, name="weather_agent")]
@@ -169,6 +174,7 @@ def _get_specific_weather(state: GraphState, params: dict) -> dict:
 
 def _get_trip_weather(state: GraphState) -> dict:
     """兜底"""
+    print_routing("weather_agent", "supervisor", "缺少参数，无法查询")
     return {
         "messages": [AIMessage(content="[Weather Agent] 缺少明确参数且无行程数据，无法查询。", name="weather_agent")]
     }
@@ -176,6 +182,9 @@ def _get_trip_weather(state: GraphState) -> dict:
 
 def weather_agent(state: GraphState, llm=None) -> dict:
     """主入口"""
+    # 节点入口标识
+    print_node_enter("weather_agent")
+
     params = _parse_planner_params(state)
     
     # --- 智能参数补全 ---
@@ -183,11 +192,11 @@ def weather_agent(state: GraphState, llm=None) -> dict:
     # 这样就能捕捉到 Itinerary Agent 刚刚发现的新地点
     if not params.get("location") or not params.get("dates"):
         if llm:
-            print("--> [Weather Agent] 参数不全，正在扫描上下文历史...")
+            debug_print("--> [Weather Agent] 参数不全，正在扫描上下文历史...")
             fallback_params = _extract_params_with_llm(state, llm)
             if fallback_params:
                 params.update(fallback_params)
-                print(f"--> [Weather Agent] 从历史中提取到参数: {params}")
+                debug_print(f"--> [Weather Agent] 从历史中提取到参数: {params}")
 
     # 路由
     if params.get("location") or params.get("dates"):

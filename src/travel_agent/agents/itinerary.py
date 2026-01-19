@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage
 
 from ..graph.state import GraphState
 from ..tools.trip import get_trip_info, get_trip_events
+from ..debug import print_node_enter, print_routing, print_trip_data_update
 
 
 def itinerary_agent(state: GraphState) -> dict:
@@ -13,6 +14,9 @@ def itinerary_agent(state: GraphState) -> dict:
     - trip_data: 只包含本 Agent 负责的字段
     - messages: 添加进度消息通知 Supervisor
     """
+    # 节点入口标识
+    print_node_enter("itinerary_agent")
+
     trip_id = state["trip_id"]
 
     # 获取行程基本信息
@@ -64,6 +68,11 @@ def itinerary_agent(state: GraphState) -> dict:
             summary += f"- {e_date} [{e_type}] {e_content}\n"
 
     progress_msg = AIMessage(content=summary, name="itinerary_agent")
+
+    # 展示数据更新
+    print_trip_data_update("trip_info", trip_info_formatted)
+    print_trip_data_update("events", events_formatted)
+    print_routing("itinerary_agent", "supervisor", f"获取行程信息 + {len(events)} 个事件")
 
     return {
         "trip_data": trip_data_update,

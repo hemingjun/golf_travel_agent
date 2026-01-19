@@ -8,6 +8,7 @@ from ..tools.customer import (
     get_customer_relatives,
     get_customer_trips,
 )
+from ..debug import print_node_enter, print_routing, print_trip_data_update
 
 
 def customer_agent(state: GraphState) -> dict:
@@ -16,6 +17,9 @@ def customer_agent(state: GraphState) -> dict:
     【安全】只能获取当前登录客户 (customer_id) 的数据
     【标准化】输出英文 Key，便于 Planner/Analyst 处理
     """
+    # 节点入口标识
+    print_node_enter("customer_agent")
+
     customer_id = state.get("customer_id")
 
     if not customer_id:
@@ -43,25 +47,25 @@ def customer_agent(state: GraphState) -> dict:
     raw_relatives = get_customer_relatives(customer_id)
     raw_trips = get_customer_trips(customer_id)
 
-    # 2. 数据清洗与映射 (中文 Key -> 英文 Key)
+    # 2. 构建客户档案（工具函数已返回英文 key）
     customer_profile = {
-        "name": raw_info.get("全名", "未知客户"),
-        "country": raw_info.get("国家", []),
-        "handicap": raw_info.get("差点"),  # 保持 None 或数字
-        "diet": raw_info.get("饮食习惯", ""),
-        "service_notes": raw_info.get("服务需求", ""),
-        "membership_level": raw_info.get("会员类型", []),
-        # 清洗亲友列表
+        "name": raw_info.get("name", "未知客户"),
+        "country": raw_info.get("country", []),
+        "handicap": raw_info.get("handicap"),  # 保持 None 或数字
+        "diet": raw_info.get("dietary_preferences", ""),
+        "service_notes": raw_info.get("service_requirements", ""),
+        "membership_level": raw_info.get("membership_type", []),
+        # 亲友列表（工具函数已返回英文 key）
         "relatives": [
-            {"id": r.get("id"), "name": r.get("全名")}
+            {"id": r.get("id"), "name": r.get("name")}
             for r in raw_relatives
         ],
-        # 清洗行程列表
+        # 行程列表（工具函数已返回英文 key）
         "trip_history": [
             {
                 "trip_id": t.get("id"),
-                "trip_name": t.get("名称"),
-                "date": t.get("项目日期"),
+                "trip_name": t.get("name"),
+                "date": t.get("date"),
             }
             for t in raw_trips
         ],
@@ -82,6 +86,10 @@ def customer_agent(state: GraphState) -> dict:
         summary += f"，关联 {'及'.join(parts)}。"
     else:
         summary += "。"
+
+    # 展示数据更新
+    print_trip_data_update("customer", customer_profile)
+    print_routing("customer_agent", "supervisor", f"加载客户 {name} 档案")
 
     return {
         "trip_data": {"customer": customer_profile},

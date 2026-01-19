@@ -4,6 +4,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.language_models import BaseChatModel
 
 from ..graph.state import GraphState
+from ..debug import debug_print, print_node_enter, print_routing
 
 
 RESPONDER_PROMPT = """你是客户的**高尔夫旅行私人管家**，陪伴客户整个行程。
@@ -64,6 +65,9 @@ RESPONDER_PROMPT = """你是客户的**高尔夫旅行私人管家**，陪伴客
 
 def final_responder(state: GraphState, llm: BaseChatModel) -> dict:
     """生成最终用户回复"""
+
+    # 节点入口标识
+    print_node_enter("responder")
 
     # 1. 获取分析报告
     analysis_report = state.get("analysis_report") or "（Analyst未生成报告）"
