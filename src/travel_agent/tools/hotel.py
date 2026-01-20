@@ -1,6 +1,6 @@
 """酒店相关工具"""
 
-from ..notion import NotionClient, DATABASES, SCHEMAS, transform_props
+from ..notion import get_client, DATABASES, SCHEMAS, transform_props
 from ..debug import debug_print
 
 
@@ -16,7 +16,7 @@ def get_hotel_details(hotel_id: str) -> dict | None:
         酒店详情字典（英文 key），包含名称、地址、电话等；失败返回 None
     """
     try:
-        client = NotionClient()
+        client = get_client()
         page = client.get_page(hotel_id)
         if not page:
             return None
@@ -39,7 +39,7 @@ def get_hotel_bookings(trip_id: str, customer_id: str | None = None) -> list[dic
     Returns:
         酒店预订列表
     """
-    client = NotionClient()
+    client = get_client()
 
     # 构建过滤条件
     if customer_id:
@@ -70,5 +70,5 @@ def update_hotel_booking(booking_id: str, data: dict) -> dict:
     Returns:
         更新后的预订信息
     """
-    client = NotionClient()
+    client = get_client()
     return client.update_page(booking_id, data, DATABASES["酒店组件"])

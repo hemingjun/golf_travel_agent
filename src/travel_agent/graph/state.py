@@ -214,6 +214,9 @@ class GraphState(TypedDict):
     # 分析报告 (由 Analyst 生成)
     analysis_report: str
 
+    # Analyst 思维链 (供 UI 调试使用)
+    analyst_thought_trace: str
+
     # Planner 输出的精炼计划 (结构化 JSON)
     refined_plan: str
 

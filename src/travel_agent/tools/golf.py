@@ -1,6 +1,6 @@
 """高尔夫相关工具"""
 
-from ..notion import NotionClient, DATABASES
+from ..notion import get_client, DATABASES
 
 
 def get_golf_bookings(trip_id: str) -> list[dict]:
@@ -12,7 +12,7 @@ def get_golf_bookings(trip_id: str) -> list[dict]:
     Returns:
         高尔夫预订列表
     """
-    client = NotionClient()
+    client = get_client()
     return client.query_pages(
         DATABASES["高尔夫组件"],
         filter={"property": "关联行程", "relation": {"contains": trip_id}},
@@ -30,5 +30,5 @@ def update_golf_booking(booking_id: str, data: dict) -> dict:
     Returns:
         更新后的预订信息
     """
-    client = NotionClient()
+    client = get_client()
     return client.update_page(booking_id, data, DATABASES["高尔夫组件"])

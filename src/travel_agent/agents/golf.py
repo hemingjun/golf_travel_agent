@@ -50,8 +50,16 @@ def golf_agent(state: GraphState) -> dict:
 
     # 转换为标准化英文 Key（供 Analyst/Weather Agent 使用）
     golf_bookings_formatted = []
+    all_player_ids: set[str] = set()  # 收集所有球手 ID（用于去重统计）
+
     for b in bookings:
         props = b.get("properties", {})
+
+        # 提取球手 ID 列表（relation 类型）
+        player_ids = props.get("球手", [])
+        if isinstance(player_ids, list):
+            all_player_ids.update(player_ids)
+
         golf_bookings_formatted.append({
             "id": b.get("id", ""),
             "course_name": _extract_text(props.get("中文名", "")),
@@ -62,6 +70,7 @@ def golf_agent(state: GraphState) -> dict:
             "caddie": props.get("Caddie", False),
             "buggy": props.get("Buggie", False),
             "notes": _extract_text(props.get("Notes", "")),
+            "player_ids": player_ids if isinstance(player_ids, list) else [],
         })
 
     # 按日期+时间排序，空值排最后
@@ -74,17 +83,21 @@ def golf_agent(state: GraphState) -> dict:
     trip_data_update = {
         "golf_bookings": golf_bookings_formatted,
         "golf_count": len(bookings),
+        "unique_player_count": len(all_player_ids),  # 去重后的球手数量
+        "all_player_ids": list(all_player_ids),      # 所有球手 ID（便于后续查询详情）
     }
 
     # 构建进度消息
     if bookings:
-        summary = f"[Golf Agent] 已获取 {len(bookings)} 条高尔夫预订记录"
+        player_info = f"（共 {len(all_player_ids)} 位球手）" if all_player_ids else ""
+        summary = f"[Golf Agent] 已获取 {len(bookings)} 条高尔夫预订记录{player_info}"
         details = []
         for item in golf_bookings_formatted:
             play_date = item.get("play_date") or "待定"
             tee_time = item.get("tee_time") or "待定"
             course = item.get("course_name") or "未知球场"
-            details.append(f"- [{play_date} {tee_time}] {course}")
+            player_count = len(item.get("player_ids", []))
+            details.append(f"- [{play_date} {tee_time}] {course} ({player_count}人)")
         summary += "\n" + "\n".join(details)
     else:
         summary = "[Golf Agent] 未找到高尔夫预订记录"

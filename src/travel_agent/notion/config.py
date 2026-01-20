@@ -70,95 +70,137 @@ class _DatabasesProxy:
 DATABASES = _DatabasesProxy()
 
 # 数据库 Schema 定义（基于实际数据库结构）
-# 格式: {"中文字段名": {"type": "notion类型", "key": "英文业务key"}}
-# key 用于统一的字段映射，type 用于 Notion API 交互
+# 格式: {"中文字段名": {"type": "notion类型", "key": "英文业务key", "semantic": "业务语义"}}
+# - __meta__: 实体级元信息（entity_key, agent, description, business_context）
+# - type: Notion API 字段类型
+# - key: 统一的英文业务标识
+# - semantic: 字段的业务含义说明
+# - relation_target: relation 字段指向的目标实体
+# - cardinality: 关系基数（one/many）
 SCHEMAS = {
-    # 行程组件 - 实际名称: 行程数据库_行程事件
+    # ==================== 行程组件 ====================
     "行程组件": {
-        "标题": {"type": "title", "key": "event_title"},
-        "日期": {"type": "date", "key": "event_date"},
-        "事件类型": {"type": "select", "key": "event_type"},
-        "事件内容": {"type": "rich_text", "key": "event_content"},
-        "行程": {"type": "relation", "key": "trip_id"},
-        "球场": {"type": "relation", "key": "course_id"},
-        "酒店": {"type": "relation", "key": "hotel_id"},
-        "Teetime": {"type": "rich_text", "key": "tee_time"},
-        "行程时长": {"type": "rich_text", "key": "duration"},
-        "天气": {"type": "rich_text", "key": "weather"},
-        "是否提醒": {"type": "checkbox", "key": "reminder_enabled"},
-        "提醒状态": {"type": "select", "key": "reminder_status"},
+        "__meta__": {
+            "entity_key": "itinerary",
+            "agent": "itinerary_agent",
+            "description": "行程中的单个日程事件",
+            "business_context": "时间线视图的基本单位，只记录事件概要和关联的组件 ID，不存储组件详情。",
+        },
+        "标题": {"type": "title", "key": "event_title", "semantic": "事件的显示标题"},
+        "日期": {"type": "date", "key": "event_date", "semantic": "事件发生的日期"},
+        "事件类型": {"type": "select", "key": "event_type", "semantic": "事件分类（打球/入住/接送等）"},
+        "事件内容": {"type": "rich_text", "key": "event_content", "semantic": "事件的详细描述"},
+        "行程": {"type": "relation", "key": "trip_id", "semantic": "所属的旅行行程", "relation_target": "行程", "cardinality": "one"},
+        "球场": {"type": "relation", "key": "course_id", "semantic": "关联的球场（仅打球事件）", "relation_target": "球场", "cardinality": "one"},
+        "酒店": {"type": "relation", "key": "hotel_id", "semantic": "关联的酒店（仅入住/退房事件）", "relation_target": "酒店", "cardinality": "one"},
+        "Teetime": {"type": "rich_text", "key": "tee_time", "semantic": "开球时间概要（详情在高尔夫组件）"},
+        "行程时长": {"type": "rich_text", "key": "duration", "semantic": "预计时长"},
+        "天气": {"type": "rich_text", "key": "weather", "semantic": "天气概要（需外部 API 获取详情）"},
+        "是否提醒": {"type": "checkbox", "key": "reminder_enabled", "semantic": "是否开启提醒"},
+        "提醒状态": {"type": "select", "key": "reminder_status", "semantic": "提醒发送状态"},
     },
-    # 高尔夫组件 - 实际名称: 行程数据库_高尔夫组件
+    # ==================== 高尔夫组件 ====================
     "高尔夫组件": {
-        "名称": {"type": "title", "key": "name"},
-        "PlayDate": {"type": "date", "key": "play_date"},
-        "Teetime": {"type": "rich_text", "key": "tee_time"},
-        "关联行程": {"type": "relation", "key": "trip_id"},
-        "关联球场": {"type": "relation", "key": "course_id"},
-        "球手": {"type": "relation", "key": "players"},
-        "Notes": {"type": "rich_text", "key": "notes"},
-        "Caddie": {"type": "checkbox", "key": "caddie"},
-        "Buggie": {"type": "checkbox", "key": "buggy"},
-        # rollup 字段（只读）
-        "中文名": {"type": "rollup", "key": "course_name_cn", "readonly": True},
-        "地址": {"type": "rollup", "key": "course_address", "readonly": True},
-        "电话": {"type": "rollup", "key": "course_phone", "readonly": True},
+        "__meta__": {
+            "entity_key": "golf",
+            "agent": "golf_agent",
+            "description": "单次高尔夫预订的完整信息",
+            "business_context": "一条记录 = 一次打球预订（不是球手）。通过 players 字段关联多个球手。统计球手数量需从 players 去重。",
+        },
+        "名称": {"type": "title", "key": "name", "semantic": "预订的显示名称"},
+        "PlayDate": {"type": "date", "key": "play_date", "semantic": "打球日期"},
+        "Teetime": {"type": "rich_text", "key": "tee_time", "semantic": "开球时间，格式 HH:MM"},
+        "关联行程": {"type": "relation", "key": "trip_id", "semantic": "所属的旅行行程", "relation_target": "行程", "cardinality": "one"},
+        "关联球场": {"type": "relation", "key": "course_id", "semantic": "预订的球场", "relation_target": "球场", "cardinality": "one"},
+        "球手": {"type": "relation", "key": "players", "semantic": "参与本次打球的客户列表", "relation_target": "客户", "cardinality": "many"},
+        "Notes": {"type": "rich_text", "key": "notes", "semantic": "预订备注"},
+        "Caddie": {"type": "checkbox", "key": "caddie", "semantic": "是否需要球童"},
+        "Buggie": {"type": "checkbox", "key": "buggy", "semantic": "是否需要球车"},
+        # rollup 字段（只读，从关联球场自动获取）
+        "中文名": {"type": "rollup", "key": "course_name_cn", "readonly": True, "semantic": "球场中文名（自动关联）"},
+        "地址": {"type": "rollup", "key": "course_address", "readonly": True, "semantic": "球场地址（自动关联）"},
+        "电话": {"type": "rollup", "key": "course_phone", "readonly": True, "semantic": "球场电话（自动关联）"},
     },
-    # 酒店组件 - 实际名称: 行程数据库_酒店组件
+    # ==================== 酒店组件 ====================
     "酒店组件": {
-        "名称": {"type": "title", "key": "name"},
-        "入住日期": {"type": "date", "key": "check_in"},
-        "退房日期": {"type": "date", "key": "check_out"},
-        "关联行程": {"type": "relation", "key": "trip_id"},
-        "酒店": {"type": "relation", "key": "hotel_id"},
-        "客户": {"type": "relation", "key": "customer_id"},
-        "房型": {"type": "select", "key": "room_type"},
-        "房间等级": {"type": "select", "key": "room_category"},
-        "景观": {"type": "select", "key": "view"},
-        "备注": {"type": "rich_text", "key": "notes"},
-        "confirmation #": {"type": "rich_text", "key": "confirmation_number"},
+        "__meta__": {
+            "entity_key": "hotel_booking",
+            "agent": "hotel_agent",
+            "description": "单次酒店预订记录",
+            "business_context": "记录入住日期、房型、客户。酒店详情（名称、地址、电话）需通过 hotel_id 关联查询酒店主数据。",
+        },
+        "名称": {"type": "title", "key": "name", "semantic": "预订的显示名称"},
+        "入住日期": {"type": "date", "key": "check_in", "semantic": "入住日期"},
+        "退房日期": {"type": "date", "key": "check_out", "semantic": "退房日期"},
+        "关联行程": {"type": "relation", "key": "trip_id", "semantic": "所属的旅行行程", "relation_target": "行程", "cardinality": "one"},
+        "酒店": {"type": "relation", "key": "hotel_id", "semantic": "预订的酒店（需二次查询获取详情）", "relation_target": "酒店", "cardinality": "one"},
+        "客户": {"type": "relation", "key": "customer_id", "semantic": "入住的客户列表", "relation_target": "客户", "cardinality": "many"},
+        "房型": {"type": "select", "key": "room_type", "semantic": "房间类型"},
+        "房间等级": {"type": "select", "key": "room_category", "semantic": "房间等级"},
+        "景观": {"type": "select", "key": "view", "semantic": "房间景观"},
+        "备注": {"type": "rich_text", "key": "notes", "semantic": "预订备注"},
+        "confirmation #": {"type": "rich_text", "key": "confirmation_number", "semantic": "确认号"},
     },
-    # 酒店主数据库 - 资料数据库_酒店
+    # ==================== 酒店主数据库 ====================
     "酒店": {
-        "英文名": {"type": "title", "key": "name_en"},
-        "中文名": {"type": "rich_text", "key": "name_cn"},
-        "地址": {"type": "rich_text", "key": "address"},
-        "电话": {"type": "phone_number", "key": "phone"},
-        "早餐信息": {"type": "rich_text", "key": "breakfast"},
-        "入住时间": {"type": "rich_text", "key": "check_in_time"},
-        "退房时间": {"type": "rich_text", "key": "check_out_time"},
-        "星级": {"type": "select", "key": "star_rating"},
-        "官网": {"type": "url", "key": "website"},
-        "入住须知": {"type": "rich_text", "key": "check_in_notes"},
-        "酒店简介": {"type": "rich_text", "key": "description"},
-        "酒店备注": {"type": "rich_text", "key": "remarks"},
+        "__meta__": {
+            "entity_key": "hotel",
+            "agent": "hotel_agent",
+            "description": "酒店主数据（非预订记录）",
+            "business_context": "酒店的基本信息库，包含名称、地址、联系方式、星级等。通过酒店组件的 hotel_id 关联。",
+        },
+        "英文名": {"type": "title", "key": "name_en", "semantic": "酒店英文名称"},
+        "中文名": {"type": "rich_text", "key": "name_cn", "semantic": "酒店中文名称"},
+        "地址": {"type": "rich_text", "key": "address", "semantic": "酒店详细地址"},
+        "电话": {"type": "phone_number", "key": "phone", "semantic": "酒店联系电话"},
+        "早餐信息": {"type": "rich_text", "key": "breakfast", "semantic": "早餐安排说明"},
+        "入住时间": {"type": "rich_text", "key": "check_in_time", "semantic": "最早入住时间"},
+        "退房时间": {"type": "rich_text", "key": "check_out_time", "semantic": "最晚退房时间"},
+        "星级": {"type": "select", "key": "star_rating", "semantic": "酒店星级"},
+        "官网": {"type": "url", "key": "website", "semantic": "酒店官网"},
+        "入住须知": {"type": "rich_text", "key": "check_in_notes", "semantic": "入住注意事项"},
+        "酒店简介": {"type": "rich_text", "key": "description", "semantic": "酒店介绍"},
+        "酒店备注": {"type": "rich_text", "key": "remarks", "semantic": "其他备注"},
     },
-    # 物流组件 - 实际名称: 行程数据库_物流组件
+    # ==================== 物流组件 ====================
     "物流组件": {
-        "名称": {"type": "title", "key": "name"},
-        "日期": {"type": "date", "key": "transport_date"},
-        "出发时间": {"type": "rich_text", "key": "departure_time"},
-        "目的地": {"type": "rich_text", "key": "destination"},
-        "车型": {"type": "rich_text", "key": "vehicle_type"},
-        "人数": {"type": "rich_text", "key": "passenger_count"},
-        "行程时长(分钟)": {"type": "number", "key": "duration_minutes"},
-        "关联行程": {"type": "relation", "key": "trip_id"},
-        "客户": {"type": "relation", "key": "customer_id"},
-        "备注": {"type": "rich_text", "key": "notes"},
+        "__meta__": {
+            "entity_key": "logistics",
+            "agent": "logistics_agent",
+            "description": "单次接送/交通安排",
+            "business_context": "记录出发时间、目的地、车型、乘客。一条记录 = 一次接送任务。",
+        },
+        "名称": {"type": "title", "key": "name", "semantic": "接送任务的显示名称"},
+        "日期": {"type": "date", "key": "transport_date", "semantic": "接送日期"},
+        "出发时间": {"type": "rich_text", "key": "departure_time", "semantic": "出发时间，格式 HH:MM"},
+        "目的地": {"type": "rich_text", "key": "destination", "semantic": "目的地名称或地址"},
+        "车型": {"type": "rich_text", "key": "vehicle_type", "semantic": "车辆类型"},
+        "人数": {"type": "rich_text", "key": "passenger_count", "semantic": "乘客人数"},
+        "行程时长(分钟)": {"type": "number", "key": "duration_minutes", "semantic": "预计行程时长（分钟）"},
+        "关联行程": {"type": "relation", "key": "trip_id", "semantic": "所属的旅行行程", "relation_target": "行程", "cardinality": "one"},
+        "客户": {"type": "relation", "key": "customer_id", "semantic": "乘车的客户列表", "relation_target": "客户", "cardinality": "many"},
+        "备注": {"type": "rich_text", "key": "notes", "semantic": "接送备注"},
     },
-    # 客户 - 实际名称: 人员数据库_客户
+    # ==================== 客户 ====================
     "客户": {
-        "Name": {"type": "title", "key": "name"},
-        "国家(必填)": {"type": "relation", "key": "country"},
-        "差点": {"type": "number", "key": "handicap"},
-        "饮食习惯": {"type": "rich_text", "key": "dietary_preferences"},
-        "服务需求": {"type": "rich_text", "key": "service_requirements"},
-        "亲友": {"type": "relation", "key": "relatives"},
-        "参加的行程": {"type": "relation", "key": "trips"},
-        "会员类型(必填)": {"type": "multi_select", "key": "membership_type"},
-        "备注": {"type": "rich_text", "key": "notes"},
+        "__meta__": {
+            "entity_key": "customer",
+            "agent": "customer_agent",
+            "description": "客户档案信息",
+            "business_context": "一条记录 = 一个独立的人（球手）。handicap 字段表示高尔夫水平，数值越低水平越高。",
+        },
+        "Name": {"type": "title", "key": "name", "semantic": "客户姓名"},
+        "生日": {"type": "date", "key": "birthday", "semantic": "出生日期"},
+        "国家(必填)": {"type": "relation", "key": "country", "semantic": "国籍", "relation_target": "国家", "cardinality": "one"},
+        "差点": {"type": "number", "key": "handicap", "semantic": "高尔夫差点（0-36，越低水平越高）"},
+        "饮食习惯": {"type": "rich_text", "key": "dietary_preferences", "semantic": "饮食偏好或禁忌"},
+        "服务需求": {"type": "rich_text", "key": "service_requirements", "semantic": "特殊服务需求"},
+        "亲友": {"type": "relation", "key": "relatives", "semantic": "关联的家人或朋友", "relation_target": "客户", "cardinality": "many"},
+        "参加的行程": {"type": "relation", "key": "trips", "semantic": "客户参与的所有行程", "relation_target": "行程", "cardinality": "many"},
+        "会员类型(必填)": {"type": "multi_select", "key": "membership_type", "semantic": "会员等级"},
+        "备注": {"type": "rich_text", "key": "notes", "semantic": "其他备注"},
         # formula 字段（只读）
-        "page_id": {"type": "formula", "key": "page_id", "readonly": True},
+        "page_id": {"type": "formula", "key": "page_id", "readonly": True, "semantic": "页面 ID（系统生成）"},
     },
 }
 
@@ -181,11 +223,13 @@ def get_field_key(db_name: str, field_name: str) -> str:
     return field_name
 
 def _build_writable_fields() -> dict[str, list[str]]:
-    """从 SCHEMAS 自动生成可写字段列表（排除 readonly 字段）"""
+    """从 SCHEMAS 自动生成可写字段列表（排除 readonly 字段和 __meta__）"""
     result = {}
     for db_name, schema in SCHEMAS.items():
         writable = []
         for field_name, field_def in schema.items():
+            if field_name == "__meta__":
+                continue
             if isinstance(field_def, dict):
                 if not field_def.get("readonly"):
                     writable.append(field_name)

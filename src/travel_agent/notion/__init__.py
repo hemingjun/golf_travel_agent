@@ -1,6 +1,6 @@
 """Notion API 管理模块"""
 
-from .client import NotionClient
+from .client import NotionClient, get_client, clear_client_cache
 from .config import (
     DATABASES,
     SCHEMAS,
@@ -20,6 +20,8 @@ from .types import (
 
 __all__ = [
     "NotionClient",
+    "get_client",
+    "clear_client_cache",
     "DATABASES",
     "SCHEMAS",
     "WRITABLE_FIELDS",

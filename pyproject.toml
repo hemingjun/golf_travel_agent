@@ -10,6 +10,7 @@ dependencies = [
     "notion-client>=2.7.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
+    "chainlit>=2.9.0",
 ]
 
 [project.scripts]

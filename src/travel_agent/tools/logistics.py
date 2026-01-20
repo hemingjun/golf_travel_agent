@@ -1,6 +1,6 @@
 """物流相关工具"""
 
-from ..notion import NotionClient, DATABASES
+from ..notion import get_client, DATABASES
 
 
 def get_logistics_arrangements(trip_id: str) -> list[dict]:
@@ -12,7 +12,7 @@ def get_logistics_arrangements(trip_id: str) -> list[dict]:
     Returns:
         物流安排列表
     """
-    client = NotionClient()
+    client = get_client()
     return client.query_pages(
         DATABASES["物流组件"],
         filter={"property": "关联行程", "relation": {"contains": trip_id}},
@@ -30,5 +30,5 @@ def update_logistics(arrangement_id: str, data: dict) -> dict:
     Returns:
         更新后的物流信息
     """
-    client = NotionClient()
+    client = get_client()
     return client.update_page(arrangement_id, data, DATABASES["物流组件"])

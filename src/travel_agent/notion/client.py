@@ -13,6 +13,28 @@ def _get_id_to_name() -> dict[str, str]:
     return {normalize_id(v): k for k, v in DATABASES.items()}
 
 
+# ==================== 单例模式 ====================
+
+_client_instance: "NotionClient | None" = None
+
+
+def get_client() -> "NotionClient":
+    """获取 NotionClient 单例
+
+    使用单例模式可以保留缓存（schema、data_source_id），避免重复 API 调用。
+    """
+    global _client_instance
+    if _client_instance is None:
+        _client_instance = NotionClient()
+    return _client_instance
+
+
+def clear_client_cache() -> None:
+    """清除单例客户端（用于测试或重新初始化）"""
+    global _client_instance
+    _client_instance = None
+
+
 class NotionClient:
     """Notion API 统一客户端
 

@@ -17,7 +17,7 @@ from ..debug import (
     print_error_msg,
 )
 from ..graph.state import GraphState
-from ..config.data_schema import format_field_ownership_for_prompt
+from ..config.data_schema import format_field_ownership_for_prompt, generate_semantic_docs
 
 
 PLANNER_PROMPT = """你是高尔夫旅行领域的**数据架构师**。
@@ -26,6 +26,17 @@ PLANNER_PROMPT = """你是高尔夫旅行领域的**数据架构师**。
 ## 系统环境
 - **当前日期**：{current_date}
 - **未来两天**：{tomorrow}, {day_after_tomorrow}
+
+---
+
+## 核心原则：数据收集完整性 (Data Completeness)
+
+你的目标是**尽可能收集完整的相关数据**，让 Analyst 能够综合分析得出最佳答案。
+
+**关键规则**：
+1. **多源采集**：同一个问题可能有多个数据来源，全部列出为不同的 Slot
+2. **不做假设**：不预判哪个数据源一定有数据，可能某些字段未填写
+3. **交叉验证**：多个数据源可以互相印证，提高答案可靠性
 
 ---
 
@@ -56,12 +67,32 @@ PLANNER_PROMPT = """你是高尔夫旅行领域的**数据架构师**。
 - ❌ 错误：去 `itinerary_agent` 找酒店详情（那里只有 ID）
 - ✅ 正确：去 `hotel_agent` 找 `hotel_name`
 
+## Step 3.5: 多路径评估 (Multi-Path Evaluation) 【重要】
+对于每个变量，思考是否存在多个数据来源：
+- **直接路径**：哪个 Agent 有这个字段？
+- **间接路径**：能否从其他字段推算？
+- **如果某个字段可能未填写**，必须提供备选数据源
+
+**示例**：统计球手数量
+- 路径 1: golf_agent → players 字段（relation）→ 去重统计
+- 路径 2: logistics_agent → 打球日接送 → 乘客数
+- 路径 3: customer_agent → 行程关联的所有客户
+→ 应生成 3 个独立的 Slot，让 Analyst 综合分析
+
 ## Step 4: 生成采购计划 (Generate procurement_plan)
 按**拓扑排序**生成 DataSlot 列表：被依赖的 slot 在前，依赖者在后。
 
 ---
 
-## 字段归属表 (FIELD_OWNERSHIP_MAP) - 绝对真理
+## 数据模型语义（必读！）
+
+理解每个实体的含义和字段语义，避免概念混淆。
+
+{semantic_docs}
+
+---
+
+## 字段归属表 (FIELD_OWNERSHIP_MAP)
 
 {field_ownership_table}
 
@@ -104,6 +135,53 @@ PLANNER_PROMPT = """你是高尔夫旅行领域的**数据架构师**。
   {{"id": "req_tips", "field_name": "tips", "description": "搜索球场攻略", "source_agent": "search_agent", "dependencies": ["req_course"]}}
 ]
 ```
+
+## 示例 4：并行采集（球手统计）【多源采集示例】
+
+**用户问题**: "这次行程有多少球手？"
+
+**思考过程**：
+- 球手数量可能来自多个数据源，不能只依赖一个
+- golf_agent: 高尔夫预订的 player_ids 去重（最直接，但字段可能未填）
+- logistics_agent: 打球当天接送的乘客数（间接推算）
+- customer_agent: 行程关联的客户列表（可能包含非球手）
+- **必须全部采集**，让 Analyst 综合分析
+
+**采购计划**:
+```json
+[
+  {{"id": "req_golf_data", "field_name": "golf_bookings", "description": "获取高尔夫预订数据（含 player_ids）", "source_agent": "golf_agent", "dependencies": []}},
+  {{"id": "req_logistics_data", "field_name": "logistics", "description": "获取接送记录（含乘客信息）", "source_agent": "logistics_agent", "dependencies": []}},
+  {{"id": "req_customer_data", "field_name": "customers", "description": "获取行程关联的所有客户", "source_agent": "customer_agent", "dependencies": []}}
+]
+```
+
+**Analyst 将收到**：
+- golf_bookings: 含 unique_player_count 和 all_player_ids
+- logistics: 含乘客人数
+- customers: 行程关联的客户列表
+
+**Analyst 综合分析**：优先使用 player_ids（最准确），若为空则用 logistics 乘客数推算
+
+## 示例 5：带依赖的并行采集
+
+**用户问题**: "住的酒店评价怎么样？"
+
+**思考过程**：
+- 需要先获取酒店名称，再搜索评价
+- 酒店名称可能来自 hotel_agent（直接）或 itinerary_agent（间接）
+- 应同时获取两个来源的酒店信息
+
+**采购计划**:
+```json
+[
+  {{"id": "req_hotel_booking", "field_name": "hotel_bookings", "description": "获取酒店预订信息", "source_agent": "hotel_agent", "dependencies": []}},
+  {{"id": "req_itinerary", "field_name": "events", "description": "获取行程事件（含酒店信息）", "source_agent": "itinerary_agent", "dependencies": []}},
+  {{"id": "req_reviews", "field_name": "hotel_reviews", "description": "搜索酒店网上评价", "source_agent": "search_agent", "dependencies": ["req_hotel_booking"]}}
+]
+```
+
+**注意**：search_agent 依赖 hotel_agent 的酒店名称才能执行搜索。
 
 ---
 
@@ -202,7 +280,8 @@ def planner_node(state: GraphState, llm: BaseChatModel) -> dict:
                 day_after_tomorrow=day_after,
                 customer_data=customer_summary,
                 trip_data_summary=trip_summary,
-                field_ownership_table=format_field_ownership_for_prompt(), # 确保你引入了这个函数
+                semantic_docs=generate_semantic_docs(),
+                field_ownership_table=format_field_ownership_for_prompt(),
             )
         ),
         *state["messages"],
