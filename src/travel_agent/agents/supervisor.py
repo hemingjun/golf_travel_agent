@@ -356,6 +356,48 @@ def _check_completion(state: GraphState) -> tuple[bool, bool, str]:
 # ==================== 上下文注水函数 ====================
 
 
+def _extract_location_from_trip_data(state: GraphState) -> str | None:
+    """从 trip_data 中提取地点/城市/国家信息
+
+    用于为 Search Agent 提供地点约束，避免搜索到同名但不同地点的实体。
+
+    优先级（选择最相关的数据源）：
+    1. golf_bookings[0].address - 球场地址（rollup 字段）
+    2. hotel_bookings[0].address - 酒店地址
+    3. logistics[0].destination - 物流目的地
+
+    Returns:
+        地点字符串（如 "Cabo San Lucas, Mexico"）或 None
+    """
+    trip_data = state.get("trip_data", {})
+
+    # 无效地址值
+    invalid_values = ("", "未知", "暂无", "无", "n/a", "na")
+
+    # 优先级 1: 球场地址（rollup 字段，已由 Golf Agent 填充）
+    golf_bookings = trip_data.get("golf_bookings", [])
+    if golf_bookings and isinstance(golf_bookings, list):
+        addr = golf_bookings[0].get("address")
+        if addr and str(addr).lower().strip() not in invalid_values:
+            return addr
+
+    # 优先级 2: 酒店地址
+    hotel_bookings = trip_data.get("hotel_bookings", [])
+    if hotel_bookings and isinstance(hotel_bookings, list):
+        addr = hotel_bookings[0].get("address")
+        if addr and str(addr).lower().strip() not in invalid_values:
+            return addr
+
+    # 优先级 3: 物流目的地
+    logistics = trip_data.get("logistics", [])
+    if logistics and isinstance(logistics, list):
+        dest = logistics[0].get("destination")
+        if dest and str(dest).lower().strip() not in invalid_values:
+            return dest
+
+    return None
+
+
 def _hydrate_instruction(slot: dict, state: GraphState) -> str:
     """上下文注水：将依赖数据注入指令
 
@@ -413,14 +455,18 @@ def _hydrate_instruction(slot: dict, state: GraphState) -> str:
 
     # 根据目标 Agent 构建专用模板
     if source_agent == "search_agent" and entity_values:
-        # Search Agent 专用模板 - 使用具体实体名
+        # 提取地点约束（避免搜到同名但不同地点的实体）
+        location = _extract_location_from_trip_data(state)
+        location_suffix = f" located in '{location}'" if location else ""
+
+        # Search Agent 专用模板 - 使用具体实体名 + 地点约束
         if "hotel_name" in entity_values:
-            return f"搜索酒店 '{entity_values['hotel_name']}' 的评价、口碑和用户反馈"
+            return f"Search for reviews of hotel '{entity_values['hotel_name']}'{location_suffix}"
         elif "course_name" in entity_values:
-            return f"搜索球场 '{entity_values['course_name']}' 的攻略、难度评价和打球建议"
+            return f"Search for reviews and tips of golf course '{entity_values['course_name']}'{location_suffix}"
         elif context_parts:
             entity_info = ", ".join(context_parts)
-            return f"搜索 {entity_info} 的相关信息: {base_desc}"
+            return f"Search for information about {entity_info}{location_suffix}: {base_desc}"
 
     elif source_agent == "weather_agent" and entity_values:
         # Weather Agent 专用模板

@@ -52,25 +52,30 @@ def _extract_params_with_llm(state: GraphState, llm) -> dict:
     if not full_context.strip():
         return {}
 
-    # 2. 构建 Prompt
-    prompt = f"""你是一个智能参数提取助手。
-当前任务是查询天气，但参数丢失。请根据【最近的对话历史】提取【地点】和【日期】。
+    # 获取当前日期用于推算
+    current_date = state.get("current_date", datetime.now().strftime("%Y-%m-%d"))
 
-特别注意：
-1. 如果上一步 Agent (如 Itinerary Agent) 找到了具体的地点 (如 "Los Cabos", "Cabo Real")，请务必提取该地点。
-2. 如果 Supervisor 发出了具体指令 (如 "查询墨西哥Los Cabos...")，请遵从该指令。
+    # 2. 构建 Prompt - 明确区分用户查询日期和行程日期
+    prompt = f"""你是一个智能参数提取助手。
+当前任务是查询天气，请根据对话历史提取【地点】和【用户想查询的日期】。
+
+**当前日期**: {current_date}
+
+**提取规则**:
+1. **location**: 提取地点英文名（优先使用 Supervisor 指令中的地点，或 Itinerary 中发现的具体地点）
+2. **dates**: 只提取**用户明确想查询的日期**，转换为 "YYYY-MM-DD" 格式
+   - "这两天" → 从 {current_date} 开始往后 2 天
+   - "明天" → {current_date} 的下一天
+   - "下周" → 计算下周的日期
+   - **重要**: 不要提取行程中的日期，除非用户明确说"行程期间"或"打球那天"
 
 上下文内容：
 ---
 {full_context}
 ---
 
-提取要求：
-1. **location**: 提取城市或地点英文名（优先提取 Itinerary 中发现的具体地点）。
-2. **dates**: 提取所有提到的日期，转换为 "YYYY-MM-DD" 格式。
-
-请仅返回 JSON 格式，例如：
-{{"location": "Los Cabos", "dates": ["2026-01-18"]}}
+请仅返回 JSON 格式：
+{{"location": "Los Cabos", "dates": ["2026-01-20", "2026-01-21"]}}
 """
 
     try:
@@ -131,8 +136,15 @@ def _get_specific_weather(state: GraphState, params: dict) -> dict:
             "messages": [AIMessage(content="[Weather Agent] 无法确定查询位置，请指定城市名称。", name="weather_agent")]
         }
 
-    # 2. 确定日期
-    raw_dates = params.get("dates") or params.get("target_date") or params.get("date") or params.get("日期")
+    # 2. 确定日期 - 优先使用用户查询日期
+    raw_dates = (
+        params.get("time_range") or      # 优先：用户明确查询的时间范围
+        params.get("query_dates") or     # 备选：查询日期
+        params.get("dates") or           # 通用日期
+        params.get("target_date") or
+        params.get("date") or
+        params.get("日期")
+    )
     if raw_dates is None:
         raw_dates = [state.get("current_date", datetime.now().strftime("%Y-%m-%d"))]
     elif isinstance(raw_dates, str):
