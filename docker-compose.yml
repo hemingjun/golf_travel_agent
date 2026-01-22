@@ -1,0 +1,24 @@
+# Golf Travel Agent - Docker Compose
+# NAS 部署配置
+
+services:
+  travel-agent-backend:
+    build: .
+    container_name: golf-travel-agent
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # JWT 密钥（生产环境务必修改）
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+    volumes:
+      # 预留持久化挂载点（日志、缓存等）
+      - ./data:/app/data
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -13,6 +13,11 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "chainlit>=2.9.0",
     "cachetools>=5.3.0",
+    # FastAPI 微服务
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sse-starlette>=2.1.0",
+    "python-jose[cryptography]>=3.3.0",
 ]
 
 [project.scripts]
