@@ -4,15 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-基于 LangGraph 构建的多 Agent 高尔夫旅行智能助手，通过 Notion 管理行程数据。支持管理员和客户两种模式。
+基于 LangGraph ReAct Agent 构建的高尔夫旅行智能助手，通过 Notion 管理行程数据。支持 CLI 和 Chainlit Web UI 两种界面，管理员和客户两种用户模式。
 
 ## 常用命令
 
 ```bash
-# 运行程序
+# CLI 模式
 uv run python main.py -t <行程ID> -u admin       # 管理员模式
 uv run python main.py -t <行程ID> -u <客户PageID> # 客户模式
 uv run python main.py -t <行程ID> -u admin -d    # 开启调试显示思维链
+
+# Web UI 模式 (Chainlit)
+TRIP_ID=<行程ID> uv run chainlit run app.py -w   # 启动 Web 界面
 
 # 开发工具
 uv run pytest                    # 运行测试
@@ -24,44 +27,45 @@ uv run ruff format .             # 代码格式化
 
 必需: `GOOGLE_API_KEY`, `NOTION_TOKEN`, `NOTION_DB_GOLF`, `NOTION_DB_HOTEL`, `NOTION_DB_LOGISTIC`, `NOTION_DB_ITINERARY`, `NOTION_DB_CUSTOMER`
 
-可选: `OPENWEATHER_API_KEY`
+可选: `OPENWEATHER_API_KEY`, `TRIP_ID`（Web 模式）
 
 ## 架构
 
-### 图执行流程
+### ReAct Agent 模式
 
+```text
+用户输入 → ReAct Agent (LLM + 工具集) → 最终回复
+              ↓ 循环调用
+         工具执行 → 观察结果 → 继续推理或生成回复
 ```
-User → Planner → Supervisor ⇄ Workers → Analyst → Responder → User
-                    ↑____________↩
-```
 
-入口为 Planner，出口为 Responder，Supervisor 负责循环调度 Workers。
-
-### 双模型策略
-
-- **Smart LLM** (`gemini-2.5-pro`): Planner、Analyst - 负责意图理解和综合分析
-- **Fast LLM** (`gemini-2.5-flash`): Supervisor、Responder、部分 Workers - 负责路由和执行
+单一 LLM 自主决定工具调用顺序，取代原有的多 Agent DAG 架构。
 
 ### 核心组件
 
-**graph/state.py** - GraphState 定义，使用 TypedDict + Annotated 实现 Reducer:
+**graph/react_graph.py** - 图创建入口:
+
+- `create_react_graph()`: 创建 ReAct Agent，注入 trip_id/customer_id
+- 使用 `langgraph.prebuilt.create_react_agent`
+
+**graph/react_state.py** - 简化状态定义:
+
 - `messages`: 对话历史（add_messages reducer）
-- `trip_data`: 结构化数据暂存区（merge_trip_data reducer - 增量合并）
-- `route_history`: 路由历史，用于死锁检测（保留最近 10 条）
+- `trip_id`, `customer_id`: 上下文标识
+- `current_date`: 当前日期（用于相对日期计算）
+- `customer_info`: 客户信息缓存
 
-**agents/planner.py** - 意图精炼与任务拆解:
-- 输出 `RefinedPlan` 结构：包含 `data_source`（PUBLIC_WEB/PRIVATE_DB/MIXED）、`task_sequence`、`procurement_recipe`
-- 使用字段归属表（FIELD_OWNERSHIP_MAP）进行数据溯源
+**tools/unified_tools.py** - 统一工具集（7 个工具）:
 
-**agents/supervisor.py** - 智能路由器，实现三大原则:
-- Principle A: 强制执行 Planner 的 data_source 指令
-- Principle B: 快速失败机制（Worker 返回 FAILURE 时切换）
-- Principle C: 动态死锁检测（连续调用+相同哈希）
+- 内部数据库: `query_golf_bookings`, `query_hotel_bookings`, `query_logistics`, `query_itinerary`, `query_customer`
+- 外部 API: `query_weather`, `search_web`
+- 闭包模式注入 trip_id/customer_id，客户模式自动权限过滤
 
-**Workers** - 无状态数据获取节点:
-- `golf_agent`, `hotel_agent`, `logistics_agent`, `itinerary_agent`, `customer_agent`: 内部数据库 Agent
-- `weather_agent`: 天气查询
-- `search_agent`: 互联网搜索
+**prompts/react_prompt.py** - System Prompt:
+
+- 事实优先原则（禁止猜测，必须调用工具）
+- 工具调用策略和日期处理规则
+- 回答风格指导
 
 ### Notion 集成
 
@@ -70,18 +74,19 @@ User → Planner → Supervisor ⇄ Workers → Analyst → Responder → User
 - 自动处理属性解析和构建（types.py）
 - Schema 预定义和缓存（config.py）
 
-### 状态管理
+### 用户模式
 
-使用 LangGraph MemorySaver 实现多轮对话。关键 reducer:
-- `merge_trip_data`: 列表按 ID 去重合并，支持增量更新
-- `reset_or_increment`: 迭代计数器，支持重置（防止无限循环）
-- `append_route_history`: 追加路由历史，支持哈希更新
+- **管理员模式** (`-u admin`): 访问所有数据，显示完整思维链
+- **客户模式** (`-u <page_id>`): 仅访问关联行程，工具自动过滤权限
 
 ## 数据流
 
-1. **Planner** 分析用户意图，生成 `refined_plan`（包含 task_sequence）
-2. **Supervisor** 解析 task_sequence，按序路由到对应 Worker
-3. **Worker** 执行工具调用，结果存入 `trip_data`
-4. **Supervisor** 检查任务完成度，决定继续执行或路由到 Analyst
-5. **Analyst** 汇总 trip_data 生成分析报告
-6. **Responder** 基于分析报告生成最终回复
+1. 用户输入问题
+2. ReAct Agent 分析问题，决定需要调用哪些工具
+3. 并行/串行调用工具获取数据（工具返回格式化文本）
+4. 基于工具结果生成最终回复
+
+## 入口点
+
+- **main.py** - CLI 模式，支持多轮对话
+- **app.py** - Chainlit Web UI，包含登录验证流程（全名拼音+生日）

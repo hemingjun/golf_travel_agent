@@ -127,14 +127,10 @@ def build_property(prop_type: str, value: Any) -> dict:
 
     match prop_type:
         case "title":
-            return {
-                "title": [{"type": "text", "text": {"content": str(value)}}]
-            }
+            return {"title": [{"type": "text", "text": {"content": str(value)}}]}
 
         case "rich_text":
-            return {
-                "rich_text": [{"type": "text", "text": {"content": str(value)}}]
-            }
+            return {"rich_text": [{"type": "text", "text": {"content": str(value)}}]}
 
         case "number":
             return {"number": float(value) if value else None}
@@ -186,7 +182,11 @@ def build_property(prop_type: str, value: Any) -> dict:
                 value = [value]
             return {
                 "files": [
-                    {"type": "external", "name": url.split("/")[-1], "external": {"url": url}}
+                    {
+                        "type": "external",
+                        "name": url.split("/")[-1],
+                        "external": {"url": url},
+                    }
                     for url in value
                 ]
             }

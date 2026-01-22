@@ -1,74 +1,105 @@
-"""酒店相关工具"""
+"""酒店预订工具"""
 
-from ..notion import get_client, DATABASES, SCHEMAS, transform_props
-from ..debug import debug_print
+from langchain_core.tools import tool
+
+from ..utils.debug import debug_print
+from ..utils.notion import DATABASES, SCHEMAS, get_client, transform_props
 
 
-def get_hotel_details(hotel_id: str) -> dict | None:
-    """根据酒店 ID 获取酒店详细信息
+def create_hotel_tool(trip_id: str, customer_id: str | None):
+    """创建酒店预订查询工具"""
 
-    通过酒店页面 ID 查询酒店主数据库，获取完整酒店信息。
+    @tool
+    def query_hotel_bookings() -> str:
+        """查询酒店预订信息
 
-    Args:
-        hotel_id: 酒店页面 ID
+        获取当前行程的酒店预订记录。
 
-    Returns:
-        酒店详情字典（英文 key），包含名称、地址、电话等；失败返回 None
-    """
-    try:
+        返回信息包括：
+        - 酒店名称和地址
+        - 入住/退房日期
+        - 房型和房间等级
+        - 确认号
+
+        适用场景：
+        - "我住哪个酒店？"
+        - "酒店地址在哪？"
+        - "什么时候退房？"
+        - "订的什么房型？"
+
+        注意：
+        - 如果是客户模式，只返回该客户的预订
+        - 结果按入住日期升序排列
+        - 如需查询酒店评价，请先用此工具获取酒店名称，再调用 search_web
+        """
         client = get_client()
-        page = client.get_page(hotel_id)
-        if not page:
-            return None
 
-        props = page.get("properties", {})
-        # 使用 transform_props 自动转换字段名（中文 → 英文）
-        return transform_props(props, SCHEMAS["酒店"])
-    except Exception as e:
-        debug_print(f"[Hotel Tools] 获取酒店详情失败: {e}")
-        return None
+        if customer_id:
+            filter_condition = {
+                "and": [
+                    {"property": "关联行程", "relation": {"contains": trip_id}},
+                    {"property": "客户", "relation": {"contains": customer_id}},
+                ]
+            }
+        else:
+            filter_condition = {
+                "property": "关联行程",
+                "relation": {"contains": trip_id},
+            }
 
+        bookings = client.query_pages(
+            DATABASES["酒店组件"],
+            filter=filter_condition,
+            sorts=[{"property": "入住日期", "direction": "ascending"}],
+        )
 
-def get_hotel_bookings(trip_id: str, customer_id: str | None = None) -> list[dict]:
-    """获取行程关联的酒店预订
+        if not bookings:
+            return "未找到酒店预订记录"
 
-    Args:
-        trip_id: Notion 行程页面 ID
-        customer_id: 客户 ID，如果提供则只返回该客户的预订
+        results = []
+        for b in bookings:
+            props = b.get("properties", {})
 
-    Returns:
-        酒店预订列表
-    """
-    client = get_client()
+            hotel_ids = props.get("酒店", [])
+            hotel_info = {}
+            if hotel_ids:
+                try:
+                    page = client.get_page(hotel_ids[0])
+                    h_props = page.get("properties", {})
+                    hotel_info = transform_props(h_props, SCHEMAS.get("酒店", {}))
+                except Exception as e:
+                    debug_print(f"[Hotel Tool] 获取酒店详情失败: {e}")
 
-    # 构建过滤条件
-    if customer_id:
-        # 同时过滤行程和客户
-        filter_condition = {
-            "and": [
-                {"property": "关联行程", "relation": {"contains": trip_id}},
-                {"property": "客户", "relation": {"contains": customer_id}},
-            ]
-        }
-    else:
-        filter_condition = {"property": "关联行程", "relation": {"contains": trip_id}}
+            results.append(
+                {
+                    "id": b.get("id"),
+                    "hotel_name": hotel_info.get("name_cn")
+                    or hotel_info.get("name_en")
+                    or "未知酒店",
+                    "address": hotel_info.get("address", ""),
+                    "check_in": props.get("入住日期", ""),
+                    "check_out": props.get("退房日期", ""),
+                    "room_type": props.get("房型", ""),
+                    "room_category": props.get("房间等级", ""),
+                    "confirmation": props.get("confirmation #", ""),
+                }
+            )
 
-    return client.query_pages(
-        DATABASES["酒店组件"],
-        filter=filter_condition,
-        sorts=[{"property": "入住日期", "direction": "ascending"}],
-    )
+        output = f"找到 {len(results)} 条酒店预订:\n\n"
+        for r in results:
+            output += f"【{r['hotel_name']}】\n"
+            output += f"  入住: {r['check_in']}\n"
+            output += f"  退房: {r['check_out']}\n"
+            output += f"  房型: {r['room_type']}"
+            if r["room_category"]:
+                output += f" ({r['room_category']})"
+            output += "\n"
+            if r["address"]:
+                output += f"  地址: {r['address']}\n"
+            if r["confirmation"]:
+                output += f"  确认号: {r['confirmation']}\n"
+            output += "\n"
 
+        return output
 
-def update_hotel_booking(booking_id: str, data: dict) -> dict:
-    """更新酒店预订
-
-    Args:
-        booking_id: 预订记录 ID
-        data: 要更新的数据
-
-    Returns:
-        更新后的预订信息
-    """
-    client = get_client()
-    return client.update_page(booking_id, data, DATABASES["酒店组件"])
+    return query_hotel_bookings

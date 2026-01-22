@@ -1,4 +1,7 @@
-"""高尔夫旅行智能助手入口"""
+"""高尔夫旅行智能助手入口
+
+基于 ReAct Agent 的单一智能体架构，让 LLM 自主决定工具调用顺序。
+"""
 
 import sys
 import uuid
@@ -10,36 +13,62 @@ load_dotenv()
 sys.path.insert(0, "src")
 
 from travel_agent import create_graph
-from travel_agent.debug import set_debug_mode
-from travel_agent.tools.customer import get_customer_info, validate_customer_access
+from travel_agent.utils import set_debug_mode
+from travel_agent.tools import get_customer_info, validate_customer_access
+from travel_agent.tools.itinerary import create_itinerary_tool
+from travel_agent.tools.weather import create_weather_tool
+
+
+def extract_text_content(content) -> str:
+    """从 LLM 响应中提取纯文本内容（兼容 Gemini 3 多模态格式）"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                texts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                texts.append(item)
+        return "\n".join(texts)
+    return str(content)
 
 
 def print_debug_node(node_name: str, output: dict):
-    """格式化输出节点执行信息（管理员调试用）"""
+    """格式化输出节点执行信息（调试用）"""
     print(f"\n[{node_name}]")
-
-    # 路由决策
-    if "next_step" in output:
-        print(f"  → 路由: {output['next_step']}")
-    if "supervisor_instructions" in output:
-        print(f"  → 任务: {output['supervisor_instructions']}")
 
     # 消息内容
     if "messages" in output:
         for msg in output["messages"]:
             content = msg.content if hasattr(msg, "content") else str(msg)
-            # 缩进多行消息
+            # 处理列表类型内容（多模态消息）
+            if isinstance(content, list):
+                content = " ".join(
+                    str(c.get("text", c)) if isinstance(c, dict) else str(c)
+                    for c in content
+                )
+            # 截断过长内容
+            if len(content) > 500:
+                content = content[:500] + "..."
             lines = content.split("\n")
-            for line in lines:
+            for line in lines[:10]:  # 最多显示 10 行
                 print(f"  → {line}")
 
-    # 数据更新
-    if "trip_data" in output and output["trip_data"]:
-        keys = list(output["trip_data"].keys())
-        print(f"  → 数据更新: {keys}")
+    # 工具调用
+    messages = output.get("messages", [])
+    if messages:
+        last_msg = messages[-1]
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+            for tc in last_msg.tool_calls:
+                print(f"  → 调用工具: {tc.get('name', '?')}")
 
 
-def main(trip_id: str = None, user_id: str = None, debug: bool = False):
+def main(
+    trip_id: str = None,
+    user_id: str = None,
+    debug: bool = False,
+):
     """主函数
 
     Args:
@@ -47,11 +76,9 @@ def main(trip_id: str = None, user_id: str = None, debug: bool = False):
         user_id: 用户 ID（admin 为管理员模式，其他值为客户 page_id）
         debug: 调试模式，开启后显示思维链
     """
-    # 判断是否为管理员模式
     is_admin = user_id == "admin"
-    # 调试模式：管理员默认开启，或通过 --debug 参数开启
     show_debug = is_admin or debug
-    set_debug_mode(show_debug)  # 设置全局调试模式
+    set_debug_mode(show_debug)
     customer_id = None if is_admin else user_id
 
     print("高尔夫旅行智能助手")
@@ -67,7 +94,14 @@ def main(trip_id: str = None, user_id: str = None, debug: bool = False):
         print("正在加载客户信息...")
         customer_data = get_customer_info(customer_id)
         if customer_data:
-            print(f"欢迎，{customer_data.get('全名', '客户')}！")
+            print(f"欢迎，{customer_data.get('name', customer_data.get('全名', '客户'))}！")
+            # 显示已记录的偏好
+            dietary = customer_data.get("dietary_preferences", "")
+            if dietary:
+                print(f"饮食偏好：{dietary}")
+            service_req = customer_data.get("service_requirements", "")
+            if service_req:
+                print(f"服务需求：{service_req}")
         else:
             print("错误：无法加载客户信息，请检查 user_id 是否正确")
             return
@@ -87,32 +121,103 @@ def main(trip_id: str = None, user_id: str = None, debug: bool = False):
         print("权限验证通过")
 
     print(f"已绑定行程: {trip_id}")
-    print("输入问题开始咨询，输入 'quit' 退出\n")
-
-    # 创建图（启用 MemorySaver 支持多轮对话）
-    graph = create_graph(checkpointer="memory")
-
-    # 生成会话 ID（用于 MemorySaver 追踪状态）
-    thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
 
     # 获取当前系统日期
     current_date = datetime.now().strftime("%Y年%m月%d日")
 
-    # 初始状态（首次调用时传入，后续由 checkpointer 自动维护）
+    # 创建 ReAct Agent 图
+    graph = create_graph(
+        trip_id=trip_id,
+        customer_id=customer_id or "",
+        customer_info=customer_data,
+        current_date=current_date,
+        checkpointer="memory",
+    )
+
+    # 初始状态
     initial_state = {
         "messages": [],
         "trip_id": trip_id,
         "customer_id": customer_id or "",
         "current_date": current_date,
-        "trip_data": {"customer": customer_data} if customer_data else {},
-        "next_step": "supervisor",
-        "supervisor_instructions": "",
-        "iteration_count": 0,
+        "customer_info": customer_data,
     }
 
-    # 标记是否为首次调用
-    first_call = True
+    # 生成会话 ID
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    # 启动时自动打招呼
+    customer_name = customer_data.get("name", "客户") if customer_data else "管理员"
+
+    # 直接调用工具获取今日数据（避免 Agent 推理延迟）
+    print("正在获取今日信息...")
+    itinerary_tool = create_itinerary_tool(trip_id)
+    weather_tool = create_weather_tool()
+
+    # 获取今日行程
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    itinerary_data = ""
+    try:
+        itinerary_data = itinerary_tool.invoke({})
+    except Exception as e:
+        itinerary_data = f"行程数据获取失败: {e}"
+
+    # 获取今日天气（从行程中提取地点，默认 Los Cabos）
+    weather_data = ""
+    try:
+        weather_data = weather_tool.invoke({"location": "Los Cabos", "date": today_iso})
+    except Exception as e:
+        weather_data = f"天气数据获取失败: {e}"
+
+    # 将数据传给 Agent 生成开场白（无需再调用工具）
+    greeting_prompt = f"""[系统指令] 请基于以下信息和 {customer_name} 打个招呼：
+
+**今日行程数据**:
+{itinerary_data}
+
+**今日天气**:
+{weather_data}
+
+请用温暖友好的语气：
+1. 问候客户
+2. 告知今天的安排（如有）
+3. 提醒天气情况
+4. 简要介绍你能提供的帮助（行程查询、天气、球场攻略等）
+
+注意：不需要再调用工具，直接基于上面的数据生成回复。"""
+
+    print("")
+    greeting_state = {
+        **initial_state,
+        "messages": [HumanMessage(content=greeting_prompt)],
+    }
+
+    try:
+        if show_debug:
+            print("─" * 20 + " 思维链 " + "─" * 20)
+            result = None
+            for stream_mode, chunk in graph.stream(
+                greeting_state, config, stream_mode=["updates", "values"]
+            ):
+                if stream_mode == "updates":
+                    for node_name, node_output in chunk.items():
+                        print_debug_node(node_name, node_output)
+                elif stream_mode == "values":
+                    result = chunk
+            print("─" * 20 + " 思维链结束 " + "─" * 20)
+        else:
+            result = graph.invoke(greeting_state, config)
+
+        last_message = result["messages"][-1]
+        print(f"助手: {extract_text_content(last_message.content)}\n")
+    except Exception as e:
+        print(f"获取今日信息失败: {e}\n")
+        if show_debug:
+            import traceback
+            traceback.print_exc()
+
+    print("输入问题继续咨询，输入 'quit' 退出\n")
 
     while True:
         try:
@@ -124,50 +229,41 @@ def main(trip_id: str = None, user_id: str = None, debug: bool = False):
             if not user_input:
                 continue
 
-            # 构建输入状态
-            if first_call:
-                # 首次调用：传入完整初始状态 + 用户消息
-                input_state = {
-                    **initial_state,
-                    "messages": [HumanMessage(content=user_input)],
-                }
-                first_call = False
-            else:
-                # 后续调用：只需传入新消息和重置迭代计数（其他状态由 checkpointer 维护）
-                input_state = {
-                    "messages": [HumanMessage(content=user_input)],
-                    "iteration_count": 0,
-                }
+            # 构建输入状态（checkpointer 会自动保持上下文）
+            input_state = {
+                "messages": [HumanMessage(content=user_input)],
+            }
 
-            # 执行图（传入 config 启用状态持久化）
+            # 执行图
             if show_debug:
-                # 调试模式：使用 stream 实时输出思维链
                 print("\n" + "─" * 20 + " 思维链 " + "─" * 20)
                 result = None
-                for mode, chunk in graph.stream(input_state, config, stream_mode=["updates", "values"]):
-                    if mode == "updates":
+                for stream_mode, chunk in graph.stream(
+                    input_state, config, stream_mode=["updates", "values"]
+                ):
+                    if stream_mode == "updates":
                         for node_name, node_output in chunk.items():
                             print_debug_node(node_name, node_output)
-                    elif mode == "values":
+                    elif stream_mode == "values":
                         result = chunk
                 print("─" * 20 + " 思维链结束 " + "─" * 20)
             else:
-                # 普通模式：显示思考提示
                 print("思考中...", end="", flush=True)
                 result = graph.invoke(input_state, config)
                 print("\r" + " " * 10 + "\r", end="")
 
             # 获取最终回复
             last_message = result["messages"][-1]
-            print(f"助手: {last_message.content}\n")
-
-            # 状态由 MemorySaver 自动维护，无需手动更新
+            print(f"助手: {extract_text_content(last_message.content)}\n")
 
         except KeyboardInterrupt:
             print("\n再见！")
             break
         except Exception as e:
             print(f"\n错误: {e}\n")
+            if show_debug:
+                import traceback
+                traceback.print_exc()
 
 
 if __name__ == "__main__":
@@ -175,8 +271,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="高尔夫旅行智能助手")
     parser.add_argument("--trip-id", "-t", help="行程 ID (Notion Page ID)")
-    parser.add_argument("--user-id", "-u", help="用户 ID（admin 为管理员模式，其他值为客户 page_id）")
-    parser.add_argument("--debug", "-d", action="store_true", help="调试模式，显示 Agent 思维链")
+    parser.add_argument(
+        "--user-id", "-u",
+        help="用户 ID（admin 为管理员模式，其他值为客户 page_id）"
+    )
+    parser.add_argument(
+        "--debug", "-d",
+        action="store_true",
+        help="调试模式，显示 Agent 思维链"
+    )
     args = parser.parse_args()
 
     main(args.trip_id, args.user_id, args.debug)
