@@ -774,6 +774,7 @@ name = "golf-travel-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiosqlite" },
     { name = "cachetools" },
     { name = "chainlit" },
     { name = "fastapi" },
@@ -796,6 +797,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "cachetools", specifier = ">=5.3.0" },
     { name = "chainlit", specifier = ">=2.9.0" },
     { name = "fastapi", specifier = ">=0.115.0" },

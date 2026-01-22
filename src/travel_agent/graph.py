@@ -17,6 +17,7 @@ from typing import Any
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.prebuilt import create_react_agent
 
 from .prompts import create_system_prompt, prompt_factory
@@ -71,15 +72,17 @@ def create_graph(
     if checkpointer == "sqlite":
         conn = sqlite3.connect(db_path, check_same_thread=False)
         checkpointer = SqliteSaver(conn)
+    elif checkpointer == "async_sqlite":
+        checkpointer = AsyncSqliteSaver.from_conn_string(db_path)
     elif checkpointer == "memory":
         checkpointer = MemorySaver()
 
-    # 使用 prompt_factory 动态生成 System Prompt
+    # 使用 state_modifier 动态生成 System Prompt（支持 config 参数）
     compiled = create_react_agent(
         model=llm,
         tools=tools,
         state_schema=ReactAgentState,
-        prompt=prompt_factory,  # 可调用函数，运行时生成
+        state_modifier=prompt_factory,  # Callable[[state, config], messages]
         checkpointer=checkpointer,
     )
 

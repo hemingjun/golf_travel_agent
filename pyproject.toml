@@ -19,6 +19,7 @@ dependencies = [
     # langserve + 持久化 (langserve 自带 sse-starlette)
     "langgraph-checkpoint-sqlite>=2.0.0",
     "langserve[server]>=0.3.0",
+    "aiosqlite>=0.22.1",
 ]
 
 [project.scripts]
