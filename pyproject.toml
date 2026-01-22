@@ -16,15 +16,26 @@ dependencies = [
     # FastAPI 微服务
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "sse-starlette>=2.1.0",
-    "python-jose[cryptography]>=3.3.0",
+    # langserve + 持久化 (langserve 自带 sse-starlette)
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "langserve[server]>=0.3.0",
 ]
 
 [project.scripts]
 golf-travel-agent = "main:main"
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/travel_agent"]
+
 [tool.uv]
-dev-dependencies = [
+package = true
+
+[dependency-groups]
+dev = [
     "pytest>=8.0.0",
     "ruff>=0.4.0",
 ]

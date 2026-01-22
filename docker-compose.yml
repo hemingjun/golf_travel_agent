@@ -10,8 +10,8 @@ services:
     env_file:
       - .env
     environment:
-      # JWT 密钥（生产环境务必修改）
-      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      # 必需：行程 ID
+      - TRIP_ID=${TRIP_ID}
     volumes:
       # 预留持久化挂载点（日志、缓存等）
       - ./data:/app/data

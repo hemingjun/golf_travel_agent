@@ -3,10 +3,12 @@
 使用 LangGraph 的 create_react_agent 构建单一 ReAct Agent。
 """
 
+import sqlite3
 from typing import Any
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import create_react_agent
 
 from .prompts import create_system_prompt
@@ -22,6 +24,7 @@ def create_graph(
     current_date: str = "",
     model: str = "gemini-3-flash-preview",
     checkpointer: Any = None,
+    db_path: str = "/app/data/checkpoints.db",
 ):
     """创建 ReAct Agent 图
 
@@ -31,7 +34,8 @@ def create_graph(
         customer_info: 客户信息缓存（可选）
         current_date: 当前日期字符串
         model: Gemini 模型 ID
-        checkpointer: 检查点管理器（"memory" 或 MemorySaver 实例）
+        checkpointer: 检查点管理器（"memory", "sqlite" 或实例）
+        db_path: SQLite 数据库路径（仅当 checkpointer="sqlite" 时使用）
 
     Returns:
         编译后的 LangGraph 图
@@ -54,7 +58,10 @@ def create_graph(
         customer_info=customer_info,
     )
 
-    if checkpointer == "memory":
+    if checkpointer == "sqlite":
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        checkpointer = SqliteSaver(conn)
+    elif checkpointer == "memory":
         checkpointer = MemorySaver()
 
     compiled = create_react_agent(
