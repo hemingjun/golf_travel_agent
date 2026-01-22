@@ -6,7 +6,13 @@
 2. 动态模式：prompt_factory() - 运行时从 config 生成（推荐）
 """
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 REACT_SYSTEM_PROMPT = """
 你是一位经验丰富的高尔夫旅行顾问，专门为 {customer_name} 提供本次行程的全程咨询服务。
@@ -51,6 +57,31 @@ REACT_SYSTEM_PROMPT = """
 - 称呼客户时直接用名字，不要假设性别（避免"先生"、"女士"）
 - 无数据时诚实说"暂无相关记录"
 """
+
+
+def _convert_message(msg: BaseMessage) -> BaseMessage:
+    """将泛型 BaseMessage 转换为具体类型
+
+    LangServe 反序列化 JSON 时可能创建泛型 BaseMessage，
+    而 Gemini 需要具体的消息类型（HumanMessage, AIMessage 等）。
+    """
+    # 已经是具体类型，直接返回
+    if isinstance(msg, (HumanMessage, AIMessage, SystemMessage, ToolMessage)):
+        return msg
+
+    # 处理 LangServe 反序列化的泛型 BaseMessage
+    msg_type = getattr(msg, "type", None)
+    content = msg.content
+
+    if msg_type == "human":
+        return HumanMessage(content=content)
+    elif msg_type == "ai":
+        return AIMessage(content=content)
+    elif msg_type == "system":
+        return SystemMessage(content=content)
+    else:
+        # 默认当作 HumanMessage
+        return HumanMessage(content=content)
 
 
 def create_system_prompt(
@@ -125,5 +156,8 @@ def prompt_factory(state: dict, config: dict) -> list:
         mode=mode,
     )
 
+    # 转换消息类型（LangServe 反序列化的泛型 BaseMessage -> 具体类型）
+    messages = [_convert_message(m) for m in state.get("messages", [])]
+
     # 返回 SystemMessage + 现有消息
-    return [SystemMessage(content=system_content)] + list(state.get("messages", []))
+    return [SystemMessage(content=system_content)] + messages

@@ -65,6 +65,23 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class LoginRequest(BaseModel):
+    """客户登录请求"""
+
+    full_name: str  # 全名拼音 (Last, First)
+    birthday: str  # 生日 YYYY-MM-DD
+    trip_id: str  # 行程 ID
+
+
+class LoginResponse(BaseModel):
+    """客户登录响应"""
+
+    success: bool
+    customer_id: str | None = None
+    customer_name: str | None = None
+    error: str | None = None
+
+
 # ==============================================================================
 # LangServe Config Modifier
 # ==============================================================================
@@ -97,7 +114,9 @@ def per_req_config_modifier(config: dict[str, Any], request: Request) -> dict[st
         config["configurable"]["current_date"] = headers["x-date"]
 
     # 调试日志
-    print(f"🔧 [Config] Thread: {config['configurable'].get('thread_id')}, Trip: {config['configurable'].get('trip_id')}")
+    print(
+        f"🔧 [Config] Thread: {config['configurable'].get('thread_id')}, Trip: {config['configurable'].get('trip_id')}"
+    )
 
     return config
 
@@ -156,6 +175,29 @@ async def health_check():
         status="healthy",
         version="0.3.0",
     )
+
+
+@app.post("/auth/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """客户认证端点 - 通过全名+生日验证客户身份
+
+    前端调用此端点获取 customer_id，之后在对话请求中通过 X-User-Id Header 传递。
+    """
+    from .tools.customer import authenticate_customer
+
+    result = authenticate_customer(
+        full_name=request.full_name,
+        birthday=request.birthday,
+        trip_id=request.trip_id,
+    )
+
+    if result:
+        return LoginResponse(
+            success=True,
+            customer_id=result.get("id"),
+            customer_name=result.get("name"),
+        )
+    return LoginResponse(success=False, error="认证失败：姓名或生日不匹配")
 
 
 # ==============================================================================

@@ -14,6 +14,7 @@
 import sqlite3
 from typing import Any
 
+from langchain_core.runnables import RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -77,12 +78,12 @@ def create_graph(
     elif checkpointer == "memory":
         checkpointer = MemorySaver()
 
-    # 使用 state_modifier 动态生成 System Prompt（支持 config 参数）
+    # 使用 RunnableLambda 包装 prompt_factory，自动传递 config 给双参数函数
     compiled = create_react_agent(
         model=llm,
         tools=tools,
         state_schema=ReactAgentState,
-        state_modifier=prompt_factory,  # Callable[[state, config], messages]
+        prompt=RunnableLambda(prompt_factory),  # LangGraph 1.0: 用 RunnableLambda 包装
         checkpointer=checkpointer,
     )
 
