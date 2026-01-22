@@ -1,53 +1,58 @@
 """统一工具库
 
-导出 create_all_tools 函数，供 graph.py 使用。
+工具从 RunnableConfig 动态获取 trip_id/customer_id，无需构建时绑定。
 """
 
 from .customer import (
     authenticate_customer,
     authenticate_customer_cached,
-    create_customer_tool,
-    create_update_dietary_preferences_tool,
-    create_update_handicap_tool,
-    create_update_service_requirements_tool,
     get_customer_info,
     get_trip_customers_batch,
+    query_customer,
+    update_dietary_preferences,
+    update_handicap,
+    update_service_requirements,
     validate_customer_access,
 )
-from .golf import create_golf_tool
-from .hotel import create_hotel_tool
-from .itinerary import create_itinerary_tool
-from .logistics import create_logistics_tool
-from .search import create_search_tool
-from .weather import create_weather_tool
+from .golf import query_golf_bookings
+from .hotel import query_hotel_bookings
+from .itinerary import query_itinerary
+from .logistics import query_logistics
+from .search import search_web
+from .weather import query_weather
 
 
-def create_all_tools(trip_id: str, customer_id: str | None = None):
-    """创建统一工具集
+# 所有工具列表 - 工具从 config["configurable"] 读取 trip_id/customer_id
+ALL_TOOLS = [
+    query_golf_bookings,
+    query_hotel_bookings,
+    query_itinerary,
+    query_logistics,
+    query_customer,
+    update_dietary_preferences,
+    update_handicap,
+    update_service_requirements,
+    query_weather,
+    search_web,
+]
 
-    Args:
-        trip_id: 行程 ID
-        customer_id: 客户 ID（可选，用于权限过滤）
+
+def get_all_tools():
+    """获取所有工具
+
+    工具在运行时从 config["configurable"] 读取 trip_id/customer_id，
+    无需在此传递参数。
 
     Returns:
         工具函数列表，供 ReAct Agent 使用
     """
-    return [
-        create_golf_tool(trip_id),
-        create_hotel_tool(trip_id, customer_id),
-        create_itinerary_tool(trip_id),
-        create_logistics_tool(trip_id),
-        create_customer_tool(customer_id),
-        create_update_dietary_preferences_tool(customer_id),
-        create_update_handicap_tool(customer_id),
-        create_update_service_requirements_tool(customer_id),
-        create_weather_tool(),
-        create_search_tool(),
-    ]
+    return ALL_TOOLS
 
 
 __all__ = [
-    "create_all_tools",
+    "get_all_tools",
+    "ALL_TOOLS",
+    # 辅助函数（用于认证和验证）
     "get_customer_info",
     "validate_customer_access",
     "authenticate_customer",

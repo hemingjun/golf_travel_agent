@@ -1,7 +1,12 @@
 """ReAct Agent System Prompt
 
 定义 ReAct Agent 的核心行为准则和工具使用指南。
+支持两种模式：
+1. 静态模式：create_system_prompt() - 图创建时生成（兼容旧代码）
+2. 动态模式：prompt_factory() - 运行时从 config 生成（推荐）
 """
+
+from langchain_core.messages import SystemMessage
 
 REACT_SYSTEM_PROMPT = """
 你是一位经验丰富的高尔夫旅行顾问，专门为 {customer_name} 提供本次行程的全程咨询服务。
@@ -80,3 +85,45 @@ def create_system_prompt(
         customer_name=customer_name,
         mode=mode,
     )
+
+
+def prompt_factory(state: dict, config: dict) -> list:
+    """运行时动态生成 System Prompt（推荐）
+
+    此函数作为 create_react_agent 的 prompt 参数，在每次调用时动态生成。
+    从 config["configurable"] 读取运行时参数。
+
+    Args:
+        state: 图状态（包含 messages）
+        config: 运行时配置，包含 configurable 字典
+
+    Returns:
+        消息列表：[SystemMessage, ...existing_messages]
+    """
+    configurable = config.get("configurable", {})
+    trip_id = configurable.get("trip_id", "unknown")
+    customer_id = configurable.get("customer_id", "")
+    customer_info = configurable.get("customer_info")
+    current_date = configurable.get("current_date", "未知日期")
+
+    # 确定模式和客户名称
+    if customer_id and customer_info:
+        customer_name = customer_info.get("name", "客户")
+        mode = "客户模式"
+    elif customer_id:
+        customer_name = "客户"
+        mode = "客户模式"
+    else:
+        customer_name = "管理员"
+        mode = "管理员模式"
+
+    # 格式化 System Prompt
+    system_content = REACT_SYSTEM_PROMPT.format(
+        current_date=current_date,
+        trip_id=trip_id[:8] + "..." if len(trip_id) > 8 else trip_id,
+        customer_name=customer_name,
+        mode=mode,
+    )
+
+    # 返回 SystemMessage + 现有消息
+    return [SystemMessage(content=system_content)] + list(state.get("messages", []))

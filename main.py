@@ -15,8 +15,8 @@ sys.path.insert(0, "src")
 from travel_agent import create_graph
 from travel_agent.utils import set_debug_mode
 from travel_agent.tools import get_customer_info, validate_customer_access
-from travel_agent.tools.itinerary import create_itinerary_tool
-from travel_agent.tools.weather import create_weather_tool
+from travel_agent.tools.itinerary import query_itinerary
+from travel_agent.tools.weather import query_weather
 
 
 def extract_text_content(content) -> str:
@@ -125,48 +125,44 @@ def main(
     # 获取当前系统日期
     current_date = datetime.now().strftime("%Y年%m月%d日")
 
-    # 创建 ReAct Agent 图
-    graph = create_graph(
-        trip_id=trip_id,
-        customer_id=customer_id or "",
-        customer_info=customer_data,
-        current_date=current_date,
-        checkpointer="memory",
-    )
+    # 创建 ReAct Agent 图（动态配置模式）
+    graph = create_graph(checkpointer="memory")
 
-    # 初始状态
+    # 初始状态（仅 messages）
     initial_state = {
         "messages": [],
-        "trip_id": trip_id,
-        "customer_id": customer_id or "",
-        "current_date": current_date,
-        "customer_info": customer_data,
     }
 
-    # 生成会话 ID
+    # 生成会话 ID，并在 config 中传递运行时参数
     thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "trip_id": trip_id,
+            "customer_id": customer_id or "",
+            "customer_info": customer_data,
+            "current_date": current_date,
+        }
+    }
 
     # 启动时自动打招呼
     customer_name = customer_data.get("name", "客户") if customer_data else "管理员"
 
     # 直接调用工具获取今日数据（避免 Agent 推理延迟）
     print("正在获取今日信息...")
-    itinerary_tool = create_itinerary_tool(trip_id)
-    weather_tool = create_weather_tool()
 
-    # 获取今日行程
+    # 获取今日行程（工具从 config 读取 trip_id）
     today_iso = datetime.now().strftime("%Y-%m-%d")
     itinerary_data = ""
     try:
-        itinerary_data = itinerary_tool.invoke({})
+        itinerary_data = query_itinerary.invoke({}, config=config)
     except Exception as e:
         itinerary_data = f"行程数据获取失败: {e}"
 
     # 获取今日天气（从行程中提取地点，默认 Los Cabos）
     weather_data = ""
     try:
-        weather_data = weather_tool.invoke({"location": "Los Cabos", "date": today_iso})
+        weather_data = query_weather.invoke({"location": "Los Cabos", "date": today_iso})
     except Exception as e:
         weather_data = f"天气数据获取失败: {e}"
 

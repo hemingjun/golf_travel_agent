@@ -1,5 +1,6 @@
 """客户信息工具 + 认证函数"""
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from ..utils.debug import debug_print
@@ -196,225 +197,221 @@ def authenticate_customer_cached(
 # ==================== 客户工具 ====================
 
 
-def create_customer_tool(customer_id: str | None):
-    """创建客户档案查询工具"""
+@tool
+def query_customer(config: RunnableConfig) -> str:
+    """查询客户档案信息
 
-    @tool
-    def query_customer() -> str:
-        """查询客户档案信息
+    获取当前客户的个人信息。
 
-        获取当前客户的个人信息。
+    返回信息包括：
+    - 姓名、国籍
+    - 高尔夫差点 (Handicap)
+    - 饮食偏好
+    - 服务需求
+    - 会员等级
 
-        返回信息包括：
-        - 姓名、国籍
-        - 高尔夫差点 (Handicap)
-        - 饮食偏好
-        - 服务需求
-        - 会员等级
+    适用场景：
+    - "我的差点是多少？"
+    - "有什么饮食禁忌？"
+    - "我的会员等级？"
 
-        适用场景：
-        - "我的差点是多少？"
-        - "有什么饮食禁忌？"
-        - "我的会员等级？"
+    注意：
+    - 此工具仅在客户模式下可用
+    - 管理员模式下调用会返回错误
+    """
+    # 从 RunnableConfig 获取 customer_id
+    configurable = config.get("configurable", {})
+    customer_id = configurable.get("customer_id", "")
 
-        注意：
-        - 此工具仅在客户模式下可用
-        - 管理员模式下调用会返回错误
-        """
-        if not customer_id:
-            return "错误：当前为管理员模式，无法查询客户档案。请指定具体客户。"
+    if not customer_id:
+        return "错误：当前为管理员模式，无法查询客户档案。请指定具体客户。"
 
-        client = get_client()
-        try:
-            page = client.get_page(customer_id)
-            props = page.get("properties", {})
-            info = transform_props(props, SCHEMAS.get("客户", {}))
+    client = get_client()
+    try:
+        page = client.get_page(customer_id)
+        props = page.get("properties", {})
+        info = transform_props(props, SCHEMAS.get("客户", {}))
 
-            # 解析国籍（relation → 名称）
-            country_ids = info.get("country", [])
-            country_name = ""
-            if country_ids:
-                try:
-                    country_page = client.get_page(country_ids[0])
-                    country_props = country_page.get("properties", {})
-                    for prop in country_props.values():
-                        if prop.get("type") == "title":
-                            country_name = parse_rich_text(prop.get("title", []))
-                            break
-                except Exception:
-                    pass
+        # 解析国籍（relation → 名称）
+        country_ids = info.get("country", [])
+        country_name = ""
+        if country_ids:
+            try:
+                country_page = client.get_page(country_ids[0])
+                country_props = country_page.get("properties", {})
+                for prop in country_props.values():
+                    if prop.get("type") == "title":
+                        country_name = parse_rich_text(prop.get("title", []))
+                        break
+            except Exception:
+                pass
 
-            output = "【客户档案】\n"
-            output += f"姓名: {info.get('name', '未知')}\n"
-            if country_name:
-                output += f"国籍: {country_name}\n"
-            output += f"差点: {info.get('handicap', '未知')}\n"
+        output = "【客户档案】\n"
+        output += f"姓名: {info.get('name', '未知')}\n"
+        if country_name:
+            output += f"国籍: {country_name}\n"
+        output += f"差点: {info.get('handicap', '未知')}\n"
 
-            dietary = info.get("dietary_preferences", "")
-            if dietary:
-                output += f"饮食偏好: {dietary}\n"
+        dietary = info.get("dietary_preferences", "")
+        if dietary:
+            output += f"饮食偏好: {dietary}\n"
 
-            service = info.get("service_requirements", "")
-            if service:
-                output += f"服务需求: {service}\n"
+        service = info.get("service_requirements", "")
+        if service:
+            output += f"服务需求: {service}\n"
 
-            membership = info.get("membership_type", [])
-            if membership:
-                output += f"与公司关系: {', '.join(membership)}\n"
+        membership = info.get("membership_type", [])
+        if membership:
+            output += f"与公司关系: {', '.join(membership)}\n"
 
-            return output
-        except Exception as e:
-            return f"获取客户信息失败: {e}"
-
-    return query_customer
-
-
-def create_update_dietary_preferences_tool(customer_id: str | None):
-    """创建更新客户饮食偏好工具"""
-
-    @tool
-    def update_dietary_preferences(preference: str) -> str:
-        """记录客户的饮食偏好或禁忌
-
-        当客户告知饮食相关的偏好、过敏或禁忌时，使用此工具记录。
-
-        Args:
-            preference: 饮食偏好描述
-
-        适用场景（饮食相关）：
-        - "我对海鲜过敏"
-        - "我吃素 / 我是素食者"
-        - "不能吃猪肉"
-        - "对花生过敏"
-        - "乳糖不耐受"
-        - "清真饮食"
-
-        注意：
-        - 仅用于饮食相关需求，其他服务需求请使用 update_service_requirements
-        - 新偏好会追加到现有记录
-        """
-        if not customer_id:
-            return "错误：当前为管理员模式，无法更新。"
-
-        client = get_client()
-        try:
-            page = client.get_page(customer_id)
-            props = page.get("properties", {})
-            info = transform_props(props, SCHEMAS.get("客户", {}))
-            existing = info.get("dietary_preferences", "")
-
-            if existing:
-                new_preferences = f"{existing}\n- {preference}"
-            else:
-                new_preferences = f"- {preference}"
-
-            client.update_page(
-                page_id=customer_id,
-                data={"饮食习惯": new_preferences},
-            )
-
-            debug_print(f"[Customer] 已记录饮食偏好: {preference}")
-            return f"已记录您的饮食偏好：{preference}"
-        except Exception as e:
-            debug_print(f"[Customer] 更新饮食偏好失败: {e}")
-            return f"记录失败: {e}"
-
-    return update_dietary_preferences
+        return output
+    except Exception as e:
+        return f"获取客户信息失败: {e}"
 
 
-def create_update_service_requirements_tool(customer_id: str | None):
-    """创建更新客户服务需求工具"""
+@tool
+def update_dietary_preferences(preference: str, config: RunnableConfig) -> str:
+    """记录客户的饮食偏好或禁忌
 
-    @tool
-    def update_service_requirements(requirements: str) -> str:
-        """记录客户的服务需求（非饮食类）
+    当客户告知饮食相关的偏好、过敏或禁忌时，使用此工具记录。
 
-        当客户告知特殊服务需求时使用此工具。饮食相关请使用 update_dietary_preferences。
+    Args:
+        preference: 饮食偏好描述
 
-        Args:
-            requirements: 服务需求描述
+    适用场景（饮食相关）：
+    - "我对海鲜过敏"
+    - "我吃素 / 我是素食者"
+    - "不能吃猪肉"
+    - "对花生过敏"
+    - "乳糖不耐受"
+    - "清真饮食"
 
-        适用场景（非饮食类服务）：
-        - "我需要轮椅服务"
-        - "希望安排海景房"
-        - "每天早上 6 点叫醒服务"
-        - "需要婴儿床"
-        - "希望安排中文导游"
+    注意：
+    - 仅用于饮食相关需求，其他服务需求请使用 update_service_requirements
+    - 新偏好会追加到现有记录
+    """
+    # 从 RunnableConfig 获取 customer_id
+    configurable = config.get("configurable", {})
+    customer_id = configurable.get("customer_id", "")
 
-        注意：
-        - 饮食相关（过敏、忌口、素食等）请使用 update_dietary_preferences
-        - 新需求会追加到现有记录
-        """
-        if not customer_id:
-            return "错误：当前为管理员模式，无法更新客户需求。"
+    if not customer_id:
+        return "错误：当前为管理员模式，无法更新。"
 
-        client = get_client()
-        try:
-            # 获取现有需求
-            page = client.get_page(customer_id)
-            props = page.get("properties", {})
-            info = transform_props(props, SCHEMAS.get("客户", {}))
-            existing = info.get("service_requirements", "")
+    client = get_client()
+    try:
+        page = client.get_page(customer_id)
+        props = page.get("properties", {})
+        info = transform_props(props, SCHEMAS.get("客户", {}))
+        existing = info.get("dietary_preferences", "")
 
-            # 追加新需求
-            if existing:
-                new_requirements = f"{existing}\n- {requirements}"
-            else:
-                new_requirements = f"- {requirements}"
+        if existing:
+            new_preferences = f"{existing}\n- {preference}"
+        else:
+            new_preferences = f"- {preference}"
 
-            # 更新到 Notion
-            client.update_page(
-                page_id=customer_id,
-                data={"服务需求": new_requirements},
-            )
+        client.update_page(
+            page_id=customer_id,
+            data={"饮食习惯": new_preferences},
+        )
 
-            debug_print(f"[Customer] 已记录服务需求: {requirements}")
-            return f"已记录您的需求：{requirements}"
-        except Exception as e:
-            debug_print(f"[Customer] 更新服务需求失败: {e}")
-            return f"记录需求失败: {e}"
-
-    return update_service_requirements
+        debug_print(f"[Customer] 已记录饮食偏好: {preference}")
+        return f"已记录您的饮食偏好：{preference}"
+    except Exception as e:
+        debug_print(f"[Customer] 更新饮食偏好失败: {e}")
+        return f"记录失败: {e}"
 
 
-def create_update_handicap_tool(customer_id: str | None):
-    """创建更新客户差点工具"""
+@tool
+def update_service_requirements(requirements: str, config: RunnableConfig) -> str:
+    """记录客户的服务需求（非饮食类）
 
-    @tool
-    def update_handicap(handicap: float) -> str:
-        """更新客户的高尔夫差点
+    当客户告知特殊服务需求时使用此工具。饮食相关请使用 update_dietary_preferences。
 
-        当客户告知自己的差点变化时，使用此工具更新记录。
+    Args:
+        requirements: 服务需求描述
 
-        Args:
-            handicap: 新的差点数值（0-54 之间的数字）
+    适用场景（非饮食类服务）：
+    - "我需要轮椅服务"
+    - "希望安排海景房"
+    - "每天早上 6 点叫醒服务"
+    - "需要婴儿床"
+    - "希望安排中文导游"
 
-        适用场景：
-        - "我的差点现在是 18"
-        - "最近打得不错，差点降到 12 了"
-        - "帮我更新差点为 25"
+    注意：
+    - 饮食相关（过敏、忌口、素食等）请使用 update_dietary_preferences
+    - 新需求会追加到现有记录
+    """
+    # 从 RunnableConfig 获取 customer_id
+    configurable = config.get("configurable", {})
+    customer_id = configurable.get("customer_id", "")
 
-        注意：
-        - 差点范围通常在 0-54 之间
-        - 数值越低表示水平越高
-        """
-        if not customer_id:
-            return "错误：当前为管理员模式，无法更新。"
+    if not customer_id:
+        return "错误：当前为管理员模式，无法更新客户需求。"
 
-        if handicap < 0 or handicap > 54:
-            return "错误：差点数值应在 0-54 之间"
+    client = get_client()
+    try:
+        # 获取现有需求
+        page = client.get_page(customer_id)
+        props = page.get("properties", {})
+        info = transform_props(props, SCHEMAS.get("客户", {}))
+        existing = info.get("service_requirements", "")
 
-        client = get_client()
-        try:
-            client.update_page(
-                page_id=customer_id,
-                data={"差点": handicap},
-            )
+        # 追加新需求
+        if existing:
+            new_requirements = f"{existing}\n- {requirements}"
+        else:
+            new_requirements = f"- {requirements}"
 
-            debug_print(f"[Customer] 已更新差点: {handicap}")
-            return f"已更新您的差点为：{handicap}"
-        except Exception as e:
-            debug_print(f"[Customer] 更新差点失败: {e}")
-            return f"更新失败: {e}"
+        # 更新到 Notion
+        client.update_page(
+            page_id=customer_id,
+            data={"服务需求": new_requirements},
+        )
 
-    return update_handicap
+        debug_print(f"[Customer] 已记录服务需求: {requirements}")
+        return f"已记录您的需求：{requirements}"
+    except Exception as e:
+        debug_print(f"[Customer] 更新服务需求失败: {e}")
+        return f"记录需求失败: {e}"
+
+
+@tool
+def update_handicap(handicap: float, config: RunnableConfig) -> str:
+    """更新客户的高尔夫差点
+
+    当客户告知自己的差点变化时，使用此工具更新记录。
+
+    Args:
+        handicap: 新的差点数值（0-54 之间的数字）
+
+    适用场景：
+    - "我的差点现在是 18"
+    - "最近打得不错，差点降到 12 了"
+    - "帮我更新差点为 25"
+
+    注意：
+    - 差点范围通常在 0-54 之间
+    - 数值越低表示水平越高
+    """
+    # 从 RunnableConfig 获取 customer_id
+    configurable = config.get("configurable", {})
+    customer_id = configurable.get("customer_id", "")
+
+    if not customer_id:
+        return "错误：当前为管理员模式，无法更新。"
+
+    if handicap < 0 or handicap > 54:
+        return "错误：差点数值应在 0-54 之间"
+
+    client = get_client()
+    try:
+        client.update_page(
+            page_id=customer_id,
+            data={"差点": handicap},
+        )
+
+        debug_print(f"[Customer] 已更新差点: {handicap}")
+        return f"已更新您的差点为：{handicap}"
+    except Exception as e:
+        debug_print(f"[Customer] 更新差点失败: {e}")
+        return f"更新失败: {e}"
