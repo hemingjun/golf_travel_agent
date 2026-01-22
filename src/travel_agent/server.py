@@ -36,6 +36,25 @@ from .graph import create_graph
 load_dotenv()
 
 # ==============================================================================
+# Environment Validation
+# ==============================================================================
+
+REQUIRED_ENV_VARS = ["GOOGLE_API_KEY", "NOTION_TOKEN"]
+
+
+def _validate_env_vars():
+    """验证必需的环境变量是否已设置"""
+    missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+    if missing:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing)}. "
+            "Please set them in .env file or environment."
+        )
+
+
+_validate_env_vars()
+
+# ==============================================================================
 # Configuration
 # ==============================================================================
 

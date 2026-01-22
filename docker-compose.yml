@@ -9,9 +9,7 @@ services:
       - "8080:8080"
     env_file:
       - .env
-    environment:
-      # 必需：行程 ID
-      - TRIP_ID=${TRIP_ID}
+    # 注意：TRIP_ID 不再通过环境变量传递，改为 HTTP Header (X-Trip-Id)
     volumes:
       # 预留持久化挂载点（日志、缓存等）
       - ./data:/app/data
@@ -20,5 +18,5 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 30s

@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 安装 uv
 RUN pip install --no-cache-dir uv
 
-# 复制依赖文件
-COPY pyproject.toml uv.lock ./
+# 复制依赖文件（README.md 是 pyproject.toml 的 readme 依赖）
+COPY pyproject.toml uv.lock README.md ./
 
 # 安装 Python 依赖（不包含开发依赖）
 RUN uv sync --frozen --no-dev
@@ -32,8 +32,8 @@ RUN mkdir -p /app/data
 # 暴露端口
 EXPOSE 8080
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+# 健康检查（AsyncSqliteSaver 初始化需要较长启动时间）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # 启动命令
