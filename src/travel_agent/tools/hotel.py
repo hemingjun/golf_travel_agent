@@ -40,7 +40,11 @@ def query_hotel_bookings(config: RunnableConfig) -> str:
 
     client = get_client()
 
-    if customer_id:
+    # admin 模式：customer_id 为空或 "admin" 时，跳过客户过滤
+    is_admin = not customer_id or customer_id.lower() == "admin"
+
+    if not is_admin:
+        # 客户模式：按行程和客户过滤
         filter_condition = {
             "and": [
                 {"property": "关联行程", "relation": {"contains": trip_id}},
@@ -48,6 +52,7 @@ def query_hotel_bookings(config: RunnableConfig) -> str:
             ]
         }
     else:
+        # 管理员模式：只按行程过滤
         filter_condition = {
             "property": "关联行程",
             "relation": {"contains": trip_id},

@@ -201,7 +201,7 @@ def authenticate_customer_cached(
 def query_customer(config: RunnableConfig) -> str:
     """查询客户档案信息
 
-    获取当前客户的个人信息。
+    获取客户的个人信息。
 
     返回信息包括：
     - 姓名、国籍
@@ -214,18 +214,43 @@ def query_customer(config: RunnableConfig) -> str:
     - "我的差点是多少？"
     - "有什么饮食禁忌？"
     - "我的会员等级？"
+    - 管理员模式："查看所有客户信息"
 
     注意：
-    - 此工具仅在客户模式下可用
-    - 管理员模式下调用会返回错误
+    - 客户模式：返回当前客户信息
+    - 管理员模式：返回行程中所有客户信息
     """
-    # 从 RunnableConfig 获取 customer_id
+    # 从 RunnableConfig 获取 customer_id 和 trip_id
     configurable = config.get("configurable", {})
     customer_id = configurable.get("customer_id", "")
+    trip_id = configurable.get("trip_id", "")
 
-    if not customer_id:
-        return "错误：当前为管理员模式，无法查询客户档案。请指定具体客户。"
+    # admin 模式检查
+    is_admin = not customer_id or customer_id.lower() == "admin"
 
+    if is_admin:
+        # 管理员模式：返回行程中所有客户信息
+        if not trip_id:
+            return "错误：未提供行程 ID"
+
+        customers = get_trip_customers_batch(trip_id)
+        if not customers:
+            return "该行程暂无关联客户"
+
+        output = f"【行程客户列表】共 {len(customers)} 位客户:\n\n"
+        for customer_info in customers.values():
+            output += f"【{customer_info.get('name', '未知')}】\n"
+            output += f"  差点: {customer_info.get('handicap', '未知')}\n"
+            dietary = customer_info.get("dietary_preferences", "")
+            if dietary:
+                output += f"  饮食偏好: {dietary}\n"
+            service = customer_info.get("service_requirements", "")
+            if service:
+                output += f"  服务需求: {service}\n"
+            output += "\n"
+        return output
+
+    # 客户模式：返回当前客户信息
     client = get_client()
     try:
         page = client.get_page(customer_id)
@@ -294,7 +319,9 @@ def update_dietary_preferences(preference: str, config: RunnableConfig) -> str:
     configurable = config.get("configurable", {})
     customer_id = configurable.get("customer_id", "")
 
-    if not customer_id:
+    # admin 模式检查
+    is_admin = not customer_id or customer_id.lower() == "admin"
+    if is_admin:
         return "错误：当前为管理员模式，无法更新。"
 
     client = get_client()
@@ -345,7 +372,9 @@ def update_service_requirements(requirements: str, config: RunnableConfig) -> st
     configurable = config.get("configurable", {})
     customer_id = configurable.get("customer_id", "")
 
-    if not customer_id:
+    # admin 模式检查
+    is_admin = not customer_id or customer_id.lower() == "admin"
+    if is_admin:
         return "错误：当前为管理员模式，无法更新客户需求。"
 
     client = get_client()
@@ -397,7 +426,9 @@ def update_handicap(handicap: float, config: RunnableConfig) -> str:
     configurable = config.get("configurable", {})
     customer_id = configurable.get("customer_id", "")
 
-    if not customer_id:
+    # admin 模式检查
+    is_admin = not customer_id or customer_id.lower() == "admin"
+    if is_admin:
         return "错误：当前为管理员模式，无法更新。"
 
     if handicap < 0 or handicap > 54:

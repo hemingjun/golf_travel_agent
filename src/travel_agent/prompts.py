@@ -104,11 +104,16 @@ def create_system_prompt(
     customer_name = "客户"
     mode = "管理员模式"
 
-    if customer_id and customer_info:
+    # admin 模式检查：customer_id 为空或 "admin" 时为管理员模式
+    is_admin = not customer_id or customer_id.lower() == "admin"
+
+    if not is_admin and customer_info:
         customer_name = customer_info.get("name", "客户")
         mode = "客户模式"
-    elif customer_id:
+    elif not is_admin:
         mode = "客户模式"
+    else:
+        customer_name = "管理员"
 
     return REACT_SYSTEM_PROMPT.format(
         current_date=current_date,
@@ -138,10 +143,13 @@ def prompt_factory(state: dict, config: dict) -> list:
     current_date = configurable.get("current_date", "未知日期")
 
     # 确定模式和客户名称
-    if customer_id and customer_info:
+    # admin 模式检查：customer_id 为空或 "admin" 时为管理员模式
+    is_admin = not customer_id or customer_id.lower() == "admin"
+
+    if not is_admin and customer_info:
         customer_name = customer_info.get("name", "客户")
         mode = "客户模式"
-    elif customer_id:
+    elif not is_admin:
         customer_name = "客户"
         mode = "客户模式"
     else:

@@ -15,12 +15,12 @@ import sqlite3
 from typing import Any
 
 from langchain_core.runnables import RunnableLambda
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.prebuilt import create_react_agent
 
+from .llm_wrapper import create_self_healing_llm
 from .prompts import create_system_prompt, prompt_factory
 from .state import ReactAgentState
 from .tools import get_all_tools
@@ -60,10 +60,11 @@ def create_graph(
     """
     debug_print(f"[Graph] 创建动态配置图: model={model}")
 
-    llm = ChatGoogleGenerativeAI(
+    llm = create_self_healing_llm(
         model=model,
         temperature=0.1,
         request_timeout=60,
+        max_retries=2,
     )
 
     # 工具从 config["configurable"] 读取 trip_id/customer_id
@@ -153,10 +154,11 @@ def create_graph_static(
     """
     debug_print(f"[Graph] 创建静态绑定图: trip={trip_id[:8]}..., model={model}")
 
-    llm = ChatGoogleGenerativeAI(
+    llm = create_self_healing_llm(
         model=model,
         temperature=0.1,
         request_timeout=60,
+        max_retries=2,
     )
 
     # 静态模式仍然使用相同的工具，但通过 config 传递参数

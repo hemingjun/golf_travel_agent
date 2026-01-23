@@ -4,18 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-基于 LangGraph ReAct Agent 构建的高尔夫旅行智能助手，通过 Notion 管理行程数据。支持 CLI 和 Chainlit Web UI 两种界面，管理员和客户两种用户模式。
+基于 LangGraph ReAct Agent 构建的高尔夫旅行智能助手，通过 Notion 管理行程数据。支持 CLI、FastAPI Server、Chainlit Web UI 三种运行模式，以及管理员和客户两种用户角色。
 
 ## 常用命令
 
 ```bash
-# CLI 模式
+# CLI 模式（单行程会话）
 uv run python main.py -t <行程ID> -u admin       # 管理员模式
 uv run python main.py -t <行程ID> -u <客户PageID> # 客户模式
-uv run python main.py -t <行程ID> -u admin -d    # 开启调试显示思维链
+uv run python main.py -t <行程ID> -u admin -d    # 调试模式（显示思维链）
 
-# Web UI 模式 (Chainlit)
-TRIP_ID=<行程ID> uv run chainlit run app.py -w   # 启动 Web 界面
+# FastAPI Server（多租户服务端）
+uv run python -m travel_agent.server             # 启动 API 服务 (端口 8080)
+uv run uvicorn travel_agent.server:app --reload  # 开发模式
+
+# Docker 部署
+docker build -t golf-travel-agent .
+docker run -p 8080:8080 --env-file .env golf-travel-agent
 
 # 开发工具
 uv run pytest                    # 运行测试
@@ -27,66 +32,81 @@ uv run ruff format .             # 代码格式化
 
 必需: `GOOGLE_API_KEY`, `NOTION_TOKEN`, `NOTION_DB_GOLF`, `NOTION_DB_HOTEL`, `NOTION_DB_LOGISTIC`, `NOTION_DB_ITINERARY`, `NOTION_DB_CUSTOMER`
 
-可选: `OPENWEATHER_API_KEY`, `TRIP_ID`（Web 模式）
+可选: `OPENWEATHER_API_KEY`, `DB_PATH`（SQLite 检查点路径，默认 `/app/data/checkpoints.db`）
 
 ## 架构
 
 ### ReAct Agent 模式
 
 ```text
-用户输入 → ReAct Agent (LLM + 工具集) → 最终回复
+用户输入 → ReAct Agent (Gemini + 工具集) → 最终回复
               ↓ 循环调用
          工具执行 → 观察结果 → 继续推理或生成回复
 ```
 
-单一 LLM 自主决定工具调用顺序，取代原有的多 Agent DAG 架构。
+单一 LLM (gemini-3-flash-preview) 自主决定工具调用顺序。
 
 ### 核心组件
 
-**graph/react_graph.py** - 图创建入口:
+源代码位于 `src/travel_agent/` 目录：
 
-- `create_react_graph()`: 创建 ReAct Agent，注入 trip_id/customer_id
-- 使用 `langgraph.prebuilt.create_react_agent`
+**graph.py** - 图创建入口:
+- `create_graph()`: 动态配置模式（推荐），运行时通过 `config["configurable"]` 传递 trip_id/customer_id
+- `create_graph_static()`: 静态绑定模式（CLI 兼容），构建时绑定参数
+- `get_graph()`: 单例模式（服务端使用）
 
-**graph/react_state.py** - 简化状态定义:
+**state.py** - 简化状态定义:
+- 仅保留 `messages`（对话历史）用于 checkpoint 持久化
+- trip_id/customer_id/current_date 通过 `config["configurable"]` 传递
 
-- `messages`: 对话历史（add_messages reducer）
-- `trip_id`, `customer_id`: 上下文标识
-- `current_date`: 当前日期（用于相对日期计算）
-- `customer_info`: 客户信息缓存
-
-**tools/unified_tools.py** - 统一工具集（7 个工具）:
-
-- 内部数据库: `query_golf_bookings`, `query_hotel_bookings`, `query_logistics`, `query_itinerary`, `query_customer`
+**tools/** - 统一工具集（10 个工具）:
+- Notion 查询: `query_golf_bookings`, `query_hotel_bookings`, `query_logistics`, `query_itinerary`, `query_customer`
+- Notion 更新: `update_dietary_preferences`, `update_handicap`, `update_service_requirements`
 - 外部 API: `query_weather`, `search_web`
-- 闭包模式注入 trip_id/customer_id，客户模式自动权限过滤
+- 工具通过 `RunnableConfig` 获取 trip_id/customer_id，无需构建时绑定
 
-**prompts/react_prompt.py** - System Prompt:
+**prompts.py** - System Prompt:
+- `prompt_factory()`: 运行时从 config 动态生成（用 RunnableLambda 包装）
+- `create_system_prompt()`: 静态生成（CLI 兼容）
+- 包含隐私保护规则：客户模式下禁止透露其他客户信息
 
-- 事实优先原则（禁止猜测，必须调用工具）
-- 工具调用策略和日期处理规则
-- 回答风格指导
+**server.py** - FastAPI + LangServe 服务端:
+- 通过 HTTP Headers 传递上下文（X-Thread-Id, X-Trip-Id, X-User-Id, X-Date）
+- `/agent/invoke` - LangServe 端点
+- `/auth/login` - 客户认证端点
+- `/welcome` - 欢迎消息端点（需要 `trip_id`, `date` 必填，`customer_id` 可选）
+- 使用 AsyncSqliteSaver 进行会话持久化
 
 ### Notion 集成
 
-**notion/client.py** - 统一 API 客户端，基于 Notion 2025-09-03 API:
-- 使用 `data_source_id` 替代 `database_id`
-- 自动处理属性解析和构建（types.py）
-- Schema 预定义和缓存（config.py）
+位于 `src/travel_agent/utils/notion/`:
+
+**client.py** - 统一 API 客户端:
+- 基于 Notion 2025-09-03 API，使用 `data_source_id` 替代 `database_id`
+- TTL 缓存：查询 5 分钟，页面 2 分钟
+- 写操作自动失效缓存
+
+**config.py** - 数据库配置:
+- `DATABASES`: 数据库 ID 映射（延迟加载）
+- `SCHEMAS`: 完整的字段定义，包含 type/key/semantic/relation_target
+
+**types.py** - 属性类型转换:
+- `parse_page_properties()`: Notion → Python
+- `build_page_properties()`: Python → Notion
 
 ### 用户模式
 
-- **管理员模式** (`-u admin`): 访问所有数据，显示完整思维链
-- **客户模式** (`-u <page_id>`): 仅访问关联行程，工具自动过滤权限
+- **管理员模式** (`-u admin`): 访问所有数据，CLI 下显示思维链
+- **客户模式** (`-u <page_id>`): 仅访问关联行程，工具自动过滤权限，隐私保护
 
 ## 数据流
 
 1. 用户输入问题
 2. ReAct Agent 分析问题，决定需要调用哪些工具
-3. 并行/串行调用工具获取数据（工具返回格式化文本）
+3. 工具从 `config["configurable"]` 读取 trip_id，查询 Notion 数据库
 4. 基于工具结果生成最终回复
 
 ## 入口点
 
-- **main.py** - CLI 模式，支持多轮对话
-- **app.py** - Chainlit Web UI，包含登录验证流程（全名拼音+生日）
+- **main.py** - CLI 模式，支持多轮对话，启动时自动获取今日行程和天气
+- **server.py** - FastAPI Server，多租户架构，供前端通过 LangServe 调用
