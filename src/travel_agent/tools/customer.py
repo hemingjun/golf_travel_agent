@@ -155,6 +155,55 @@ def authenticate_customer(full_name: str, birthday: str, trip_id: str) -> dict |
     return None
 
 
+def authenticate_customer_global(full_name: str, birthday: str) -> dict | None:
+    """全局客户认证（无需 trip_id）
+
+    直接在客户数据库中通过姓名+生日匹配客户。
+
+    Args:
+        full_name: 全名拼音 (格式: Last Name, First Name)
+        birthday: 生日 (支持 YYYY-M-D 或 YYYY-MM-DD)
+
+    Returns:
+        认证成功返回 {"id": customer_page_id, "name": customer_name}
+        失败返回 None
+    """
+    normalized_birthday = _normalize_date(birthday)
+    client = get_client()
+
+    try:
+        # 按生日精确查询，减少返回结果数量
+        pages = client.query_pages(
+            database_id=DATABASES["客户"],
+            filter={"property": "生日", "date": {"equals": normalized_birthday}},
+        )
+
+        if not pages:
+            debug_print(f"[Customer] 无匹配生日的客户: {birthday}")
+            return None
+
+        normalized_input = _normalize_name(full_name)
+
+        for page in pages:
+            props = page.get("properties", {})
+            customer_info = transform_props(props, SCHEMAS["客户"])
+
+            notion_name = customer_info.get("name", "")
+            normalized_notion = _normalize_name(notion_name)
+
+            # 使用 startswith 兼容输入缩写
+            if normalized_notion.startswith(normalized_input):
+                debug_print(f"[Customer] 全局认证成功: {notion_name}")
+                return {"id": page["id"], "name": notion_name}
+
+        debug_print(f"[Customer] 生日匹配但姓名不匹配: {full_name}, {birthday}")
+        return None
+
+    except Exception as e:
+        debug_print(f"[Customer] 全局认证失败: {e}")
+        return None
+
+
 def authenticate_customer_cached(
     full_name: str, birthday: str, customers_cache: dict
 ) -> dict | None:

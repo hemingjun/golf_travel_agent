@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableSerializable
 from langchain_core.runnables.config import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from .utils.debug import debug_print
+from .debug import debug_print
 
 # Error states that indicate a malformed response
 MALFORMED_FINISH_REASONS = frozenset({"MALFORMED_FUNCTION_CALL", "OTHER"})
@@ -35,10 +35,14 @@ class SelfHealingGemini(RunnableSerializable[List[BaseMessage], AIMessage]):
     This wrapper detects MALFORMED_FUNCTION_CALL errors and automatically retries
     with a helpful prompt to guide the model toward a valid response.
 
+    If the primary model fails after all retries, it falls back to a secondary model
+    for one final attempt before returning the fallback response.
+
     Implements the Runnable protocol for compatibility with LangChain/LangGraph.
     """
 
     llm: Any  # ChatGoogleGenerativeAI or RunnableBinding
+    fallback_llm: Any = None  # Fallback model when primary fails
     max_retries: int = 2
 
     class Config:
@@ -140,7 +144,19 @@ class SelfHealingGemini(RunnableSerializable[List[BaseMessage], AIMessage]):
                 if attempt >= self.max_retries:
                     raise
 
-        debug_print("[LLM] Max retries exceeded, returning fallback response")
+        # Primary model failed, try fallback model
+        if self.fallback_llm:
+            debug_print("[LLM] Primary model failed, trying fallback model")
+            try:
+                response = self.fallback_llm.invoke(messages, config=config, **kwargs)
+                if not self._is_malformed_response(response):
+                    debug_print("[LLM] Fallback model succeeded")
+                    return response
+                debug_print("[LLM] Fallback model also returned malformed response")
+            except Exception as e:
+                debug_print(f"[LLM] Fallback model error: {e}")
+
+        debug_print("[LLM] All attempts failed, returning fallback response")
         return self._create_fallback_response()
 
     async def ainvoke(
@@ -175,7 +191,21 @@ class SelfHealingGemini(RunnableSerializable[List[BaseMessage], AIMessage]):
                 if attempt >= self.max_retries:
                     raise
 
-        debug_print("[LLM] Async max retries exceeded, returning fallback response")
+        # Primary model failed, try fallback model
+        if self.fallback_llm:
+            debug_print("[LLM] Async primary model failed, trying fallback model")
+            try:
+                response = await self.fallback_llm.ainvoke(
+                    messages, config=config, **kwargs
+                )
+                if not self._is_malformed_response(response):
+                    debug_print("[LLM] Async fallback model succeeded")
+                    return response
+                debug_print("[LLM] Async fallback model also returned malformed response")
+            except Exception as e:
+                debug_print(f"[LLM] Async fallback model error: {e}")
+
+        debug_print("[LLM] Async all attempts failed, returning fallback response")
         return self._create_fallback_response()
 
     def stream(
@@ -194,7 +224,16 @@ class SelfHealingGemini(RunnableSerializable[List[BaseMessage], AIMessage]):
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> "SelfHealingGemini":
         """Bind tools to underlying LLM and return a new wrapper instance."""
         bound = self.llm.bind_tools(tools, **kwargs)
-        return SelfHealingGemini(llm=bound, max_retries=self.max_retries)
+        fallback_bound = (
+            self.fallback_llm.bind_tools(tools, **kwargs)
+            if self.fallback_llm
+            else None
+        )
+        return SelfHealingGemini(
+            llm=bound,
+            fallback_llm=fallback_bound,
+            max_retries=self.max_retries,
+        )
 
     # Required for BaseChatModel compatibility in create_react_agent
     def _generate(
@@ -234,6 +273,7 @@ class SelfHealingGemini(RunnableSerializable[List[BaseMessage], AIMessage]):
 
 def create_self_healing_llm(
     model: str = "gemini-3-flash-preview",
+    fallback_model: str = "gemini-2.5-flash",
     temperature: float = 0.1,
     request_timeout: int = 60,
     max_retries: int = 2,
@@ -242,7 +282,8 @@ def create_self_healing_llm(
     """Factory function to create a self-healing Gemini LLM.
 
     Args:
-        model: Gemini model ID
+        model: Primary Gemini model ID
+        fallback_model: Fallback model ID when primary fails (set to None to disable)
         temperature: Sampling temperature
         request_timeout: Request timeout in seconds
         max_retries: Maximum retry attempts for malformed responses
@@ -257,4 +298,19 @@ def create_self_healing_llm(
         request_timeout=request_timeout,
         **kwargs,
     )
-    return SelfHealingGemini(llm=base_llm, max_retries=max_retries)
+
+    fallback_llm = None
+    if fallback_model:
+        fallback_llm = ChatGoogleGenerativeAI(
+            model=fallback_model,
+            temperature=temperature,
+            request_timeout=request_timeout,
+            **kwargs,
+        )
+        debug_print(f"[LLM] Created with fallback model: {fallback_model}")
+
+    return SelfHealingGemini(
+        llm=base_llm,
+        fallback_llm=fallback_llm,
+        max_retries=max_retries,
+    )

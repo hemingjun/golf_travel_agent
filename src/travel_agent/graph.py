@@ -20,7 +20,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.prebuilt import create_react_agent
 
-from .llm_wrapper import create_self_healing_llm
+from .utils.llm_wrapper import create_self_healing_llm
 from .prompts import create_system_prompt, prompt_factory
 from .state import ReactAgentState
 from .tools import get_all_tools

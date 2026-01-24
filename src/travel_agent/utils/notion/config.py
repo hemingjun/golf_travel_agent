@@ -30,6 +30,7 @@ def _get_db_id(env_key: str, name: str) -> str:
 def get_databases() -> dict[str, str]:
     """获取数据库 ID 映射（延迟加载）"""
     return {
+        "行程": _get_db_id("NOTION_DB_TRIP", "行程"),
         "行程组件": _get_db_id("NOTION_DB_ITINERARY", "行程组件"),
         "高尔夫组件": _get_db_id("NOTION_DB_GOLF", "高尔夫组件"),
         "酒店组件": _get_db_id("NOTION_DB_HOTEL", "酒店组件"),

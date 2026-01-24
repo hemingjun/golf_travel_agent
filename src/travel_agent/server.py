@@ -241,9 +241,9 @@ class HealthResponse(BaseModel):
 class LoginRequest(BaseModel):
     """客户登录请求"""
 
-    full_name: str  # 全名拼音 (Last, First)
-    birthday: str  # 生日 YYYY-MM-DD
-    trip_id: str  # 行程 ID
+    full_name: str  # 全名拼音 (Last, First)，输入 "admin" 可跳过生日验证
+    birthday: str | None = None  # 生日 YYYY-MM-DD，admin 登录时可省略
+    # 移除 trip_id，新流程：先登录 → 获取行程列表 → 选择行程
 
 
 class LoginResponse(BaseModel):
@@ -270,6 +270,44 @@ class WelcomeResponse(BaseModel):
     customer_name: str = ""
     greeting: str = ""
     thread_id: str = ""  # 用于后续对话
+    error: str | None = None
+
+
+class TripInfo(BaseModel):
+    """行程信息"""
+
+    trip_id: str
+    trip_name: str
+    start_date: str | None = None
+    end_date: str | None = None
+    status: str  # 未开始/进行中/已结束
+    customer_count: int = 0
+
+
+class UpcomingTripsResponse(BaseModel):
+    """行程列表响应"""
+
+    success: bool
+    trips: list[TripInfo] = []
+    error: str | None = None
+
+
+class CustomerTripInfo(BaseModel):
+    """客户行程信息（用于 /customers/{id}/trips）"""
+
+    id: str  # 行程 Page ID
+    name: str  # 行程名称
+    destination: str = ""  # 目的地
+    start_date: str | None = None  # YYYY-MM-DD
+    end_date: str | None = None  # YYYY-MM-DD
+    status: str  # upcoming/ongoing/completed
+
+
+class CustomerTripsResponse(BaseModel):
+    """客户行程列表响应"""
+
+    success: bool
+    trips: list[CustomerTripInfo] = []
     error: str | None = None
 
 
@@ -397,16 +435,29 @@ async def health_check():
 
 @app.post("/auth/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
-    """客户认证端点 - 通过全名+生日验证客户身份
+    """客户认证端点 - 通过全名+生日验证客户身份（无需行程）
 
-    前端调用此端点获取 customer_id，之后在对话请求中通过 X-User-Id Header 传递。
+    新流程：先登录获取 customer_id → 调用 /customers/{id}/trips 获取行程列表 → 选择行程后对话
+
+    特殊：输入 "admin" 可跳过生日验证，直接以管理员身份登录。
     """
-    from .tools.customer import authenticate_customer
+    # Admin 快捷登录 - 跳过生日验证
+    if request.full_name.lower() == "admin":
+        return LoginResponse(
+            success=True,
+            customer_id="admin",
+            customer_name="管理员",
+        )
 
-    result = authenticate_customer(
+    # 普通客户需要生日验证
+    if not request.birthday:
+        return LoginResponse(success=False, error="请提供生日")
+
+    from .tools.customer import authenticate_customer_global
+
+    result = authenticate_customer_global(
         full_name=request.full_name,
         birthday=request.birthday,
-        trip_id=request.trip_id,
     )
 
     if result:
@@ -415,7 +466,209 @@ async def login(request: LoginRequest):
             customer_id=result.get("id"),
             customer_name=result.get("name"),
         )
-    return LoginResponse(success=False, error="认证失败：姓名或生日不匹配")
+    return LoginResponse(success=False, error="未找到匹配的用户信息")
+
+
+@app.get("/trips/upcoming", response_model=UpcomingTripsResponse)
+async def get_upcoming_trips():
+    """获取即将开始或正在进行的行程列表
+
+    返回 "项目状态" 为 "未开始" 或 "进行中" 的行程，
+    供前端在登录前展示行程选择界面。
+    """
+    from .utils.notion import DATABASES, get_client
+
+    try:
+        client = get_client()
+
+        # 查询行程数据库，过滤状态为 "未开始" 或 "进行中"
+        trips = client.query_pages(
+            DATABASES["行程"],
+            filter={
+                "or": [
+                    {"property": "项目状态", "formula": {"string": {"equals": "未开始"}}},
+                    {"property": "项目状态", "formula": {"string": {"equals": "进行中"}}},
+                ]
+            },
+            sorts=[{"property": "项目日期", "direction": "ascending"}],
+        )
+
+        result = []
+        for trip in trips:
+            props = trip.get("properties", {})
+
+            # 解析行程名称（字段名为 Name，已转换为字符串）
+            trip_name = props.get("Name", "") or ""
+
+            # 解析项目日期（已转换为 datetime.date 对象）
+            start_date = None
+            end_date = None
+            date_val = props.get("项目日期")
+            if date_val:
+                if hasattr(date_val, "isoformat"):
+                    start_date = date_val.isoformat()
+                    end_date = start_date  # parse_property 只返回 start
+                elif isinstance(date_val, str):
+                    start_date = date_val
+                    end_date = date_val
+
+            # 解析项目状态（formula 已转换为字符串）
+            status = props.get("项目状态", "") or ""
+
+            # 解析客户数量（relation 已转换为 ID 列表）
+            customer_ids = props.get("客户", []) or []
+            customer_count = len(customer_ids) if isinstance(customer_ids, list) else 0
+
+            result.append(
+                TripInfo(
+                    trip_id=trip.get("id", ""),
+                    trip_name=trip_name,
+                    start_date=start_date,
+                    end_date=end_date,
+                    status=status,
+                    customer_count=customer_count,
+                )
+            )
+
+        return UpcomingTripsResponse(success=True, trips=result)
+
+    except Exception as e:
+        print(f"[Trips] 查询行程列表失败: {e}")
+        return UpcomingTripsResponse(success=False, error=str(e))
+
+
+@app.get("/customers/{customer_id}/trips", response_model=CustomerTripsResponse)
+async def get_customer_trips(customer_id: str):
+    """获取客户参加的所有行程
+
+    从客户的 "参加的行程" relation 字段获取行程列表。
+    排序：ongoing > upcoming > completed，同状态按开始日期升序。
+
+    特殊：admin 返回所有未开始和进行中的行程。
+    """
+    from .utils.notion import DATABASES, get_client
+
+    client = get_client()
+
+    # Admin 模式：返回所有未开始和进行中的行程
+    if not customer_id or customer_id.lower() == "admin":
+        try:
+            all_trips = client.query_pages(
+                DATABASES["行程"],
+                filter={
+                    "or": [
+                        {"property": "项目状态", "formula": {"string": {"equals": "未开始"}}},
+                        {"property": "项目状态", "formula": {"string": {"equals": "进行中"}}},
+                    ]
+                },
+                sorts=[{"property": "项目日期", "direction": "ascending"}],
+            )
+
+            trips = []
+            for trip in all_trips:
+                trip_id = trip.get("id", "")
+                trip_props = trip.get("properties", {})
+
+                # 解析行程名称（已转换为字符串）
+                trip_name = trip_props.get("Name", "") or ""
+
+                # 解析日期（已转换为 datetime.date 对象）
+                start_date = None
+                end_date = None
+                date_val = trip_props.get("项目日期")
+                if date_val:
+                    if hasattr(date_val, "isoformat"):
+                        start_date = date_val.isoformat()
+                        end_date = start_date
+                    elif isinstance(date_val, str):
+                        start_date = date_val
+                        end_date = date_val
+
+                # 解析状态（formula 已转换为字符串）
+                notion_status = trip_props.get("项目状态", "") or ""
+                status = _map_trip_status(notion_status)
+
+                # 获取目的地
+                destination = _get_trip_destination(trip_id)
+
+                trips.append(
+                    CustomerTripInfo(
+                        id=trip_id,
+                        name=trip_name,
+                        destination=destination,
+                        start_date=start_date,
+                        end_date=end_date,
+                        status=status,
+                    )
+                )
+
+            trips.sort(key=_trip_sort_key)
+            return CustomerTripsResponse(success=True, trips=trips)
+
+        except Exception as e:
+            print(f"[CustomerTrips] 获取管理员行程列表失败: {e}")
+            return CustomerTripsResponse(success=False, error=f"获取行程列表失败: {e}")
+
+    try:
+        # 1. 获取客户页面，读取 "参加的行程" relation
+        customer_page = client.get_page(customer_id)
+        props = customer_page.get("properties", {})
+        trip_ids = props.get("参加的行程", [])  # relation 字段解析后为 ID 列表
+
+        if not trip_ids:
+            return CustomerTripsResponse(success=True, trips=[])
+
+        # 2. 批量获取行程详情
+        trips = []
+        for trip_id in trip_ids:
+            try:
+                trip_page = client.get_page(trip_id)
+                trip_props = trip_page.get("properties", {})
+
+                # 解析行程名称（已转换为字符串）
+                trip_name = trip_props.get("Name", "") or ""
+
+                # 解析日期（已转换为 datetime.date 对象）
+                start_date = None
+                end_date = None
+                date_val = trip_props.get("项目日期")
+                if date_val:
+                    if hasattr(date_val, "isoformat"):
+                        start_date = date_val.isoformat()
+                        end_date = start_date
+                    elif isinstance(date_val, str):
+                        start_date = date_val
+                        end_date = date_val
+
+                # 解析状态（formula 已转换为字符串）
+                notion_status = trip_props.get("项目状态", "") or ""
+                status = _map_trip_status(notion_status)
+
+                # 获取目的地
+                destination = _get_trip_destination(trip_id)
+
+                trips.append(
+                    CustomerTripInfo(
+                        id=trip_id,
+                        name=trip_name,
+                        destination=destination,
+                        start_date=start_date,
+                        end_date=end_date,
+                        status=status,
+                    )
+                )
+            except Exception as e:
+                print(f"[CustomerTrips] 获取行程 {trip_id} 失败: {e}")
+                continue
+
+        # 3. 排序: ongoing > upcoming > completed
+        trips.sort(key=_trip_sort_key)
+
+        return CustomerTripsResponse(success=True, trips=trips)
+
+    except Exception as e:
+        print(f"[CustomerTrips] 获取客户行程失败: {e}")
+        return CustomerTripsResponse(success=False, error=f"获取行程列表失败: {e}")
 
 
 def _format_date_cn(date_iso: str) -> str:
@@ -466,7 +719,7 @@ def _get_trip_location(trip_id: str) -> str:
                 hotel_page = client.get_page(hotel_ids[0])
                 address = _extract_text(hotel_page.get("properties", {}).get("地址", ""))
                 if address:
-                    print(f"[Location] 使用酒店地址")
+                    print("[Location] 使用酒店地址")
                     return address
     except Exception as e:
         print(f"[Location] 查询酒店失败: {e}")
@@ -482,12 +735,12 @@ def _get_trip_location(trip_id: str) -> str:
         if golf_bookings:
             address = _extract_text(golf_bookings[0].get("properties", {}).get("地址", ""))
             if address:
-                print(f"[Location] 使用球场地址")
+                print("[Location] 使用球场地址")
                 return address
     except Exception as e:
         print(f"[Location] 查询球场失败: {e}")
 
-    print(f"[Location] 使用默认地址")
+    print("[Location] 使用默认地址")
     return default_location
 
 
@@ -509,6 +762,98 @@ def _get_trip_start_date(trip_id: str) -> str | None:
         print(f"[TripDate] 获取行程日期失败: {e}")
 
     return None
+
+
+def _map_trip_status(notion_status: str) -> str:
+    """将 Notion 项目状态映射为 API 状态
+
+    映射规则:
+    - 未开始 -> upcoming
+    - 进行中 -> ongoing
+    - 已结束 -> completed
+    """
+    status_map = {
+        "未开始": "upcoming",
+        "进行中": "ongoing",
+        "已结束": "completed",
+    }
+    return status_map.get(notion_status, "upcoming")
+
+
+def _trip_sort_key(trip: CustomerTripInfo) -> tuple:
+    """行程排序键: ongoing > upcoming > completed, 同状态按开始日期升序"""
+    status_priority = {
+        "ongoing": 0,
+        "upcoming": 1,
+        "completed": 2,
+    }
+    priority = status_priority.get(trip.status, 3)
+    # 日期排序：None 排到最后
+    date_key = trip.start_date or "9999-99-99"
+    return (priority, date_key)
+
+
+def _get_trip_destination(trip_id: str) -> str:
+    """从行程中提取目的地（简化版，用于列表展示）
+
+    优先从行程名称提取，备选从第一个酒店名称提取。
+    """
+    from .utils.notion import DATABASES, get_client
+
+    client = get_client()
+
+    # 1. 尝试从行程名称提取（如 "Los Cabos 2026-01" → "Los Cabos"）
+    try:
+        trip_page = client.get_page(trip_id)
+        props = trip_page.get("properties", {})
+
+        # 行程名称（已转换为字符串）
+        trip_name = props.get("Name", "") or ""
+
+        if trip_name:
+            # 从行程名称提取目的地
+            # 格式1: "20260120 棕榈泉" → "棕榈泉"（日期在前）
+            # 格式2: "Los Cabos 2026-01" → "Los Cabos"（目的地在前）
+            parts = trip_name.split()
+            if parts and parts[0][0].isdigit():
+                # 日期在前的格式，取日期后面的部分
+                destination_parts = parts[1:]
+            else:
+                # 目的地在前的格式，取数字前的部分
+                destination_parts = []
+                for part in parts:
+                    if part[0].isdigit():
+                        break
+                    destination_parts.append(part)
+            if destination_parts:
+                return " ".join(destination_parts)
+    except Exception as e:
+        print(f"[Destination] 从行程名称提取失败: {e}")
+
+    # 2. 从第一个酒店名称提取
+    try:
+        hotel_bookings = client.query_pages(
+            DATABASES["酒店组件"],
+            filter={"property": "关联行程", "relation": {"contains": trip_id}},
+            sorts=[{"property": "入住日期", "direction": "ascending"}],
+        )
+        if hotel_bookings:
+            hotel_ids = hotel_bookings[0].get("properties", {}).get("酒店", [])
+            if hotel_ids:
+                hotel_page = client.get_page(hotel_ids[0])
+                hotel_props = hotel_page.get("properties", {})
+                # 优先使用中文名
+                cn_name_prop = hotel_props.get("中文名", {})
+                if cn_name_prop.get("rich_text"):
+                    cn_name = "".join(
+                        t.get("plain_text", "") for t in cn_name_prop.get("rich_text", [])
+                    )
+                    if cn_name:
+                        return cn_name.split()[0]
+    except Exception as e:
+        print(f"[Destination] 从酒店名称提取失败: {e}")
+
+    return ""
 
 
 @app.post("/welcome", response_model=WelcomeResponse)
@@ -663,7 +1008,7 @@ async def welcome(request: Request, body: WelcomeRequest):
 
     # 6. 调用 Self-Healing LLM 生成欢迎语
     try:
-        from .llm_wrapper import create_self_healing_llm
+        from .utils.llm_wrapper import create_self_healing_llm
 
         llm = create_self_healing_llm(
             model="gemini-3-flash-preview",
@@ -687,7 +1032,7 @@ async def welcome(request: Request, body: WelcomeRequest):
 
     # 验证 greeting 内容有效性（不缓存空内容）
     if not greeting or not greeting.strip():
-        print(f"⚠️ [Welcome] Empty greeting, skipping cache")
+        print("⚠️ [Welcome] Empty greeting, skipping cache")
         return WelcomeResponse(
             success=False,
             error="生成欢迎消息失败：LLM 返回空内容",
