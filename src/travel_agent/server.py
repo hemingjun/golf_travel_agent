@@ -433,6 +433,15 @@ async def health_check():
     )
 
 
+@app.post("/cache/clear-welcome")
+async def clear_welcome_cache():
+    """清空 Welcome 消息缓存"""
+    count = len(WELCOME_CACHE)
+    WELCOME_CACHE.clear()
+    print(f"🗑️ [Cache] Cleared {count} welcome cache entries")
+    return {"success": True, "cleared": count}
+
+
 @app.post("/auth/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
     """客户认证端点 - 通过全名+生日验证客户身份（无需行程）
