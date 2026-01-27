@@ -83,6 +83,24 @@ TRIP_SESSIONS: dict[str, set[str]] = {}
 WELCOME_CACHE: dict[str, dict] = {}
 WELCOME_CACHE_TTL = timedelta(hours=3)  # 3小时过期
 
+# LLM 单例（避免每次请求重新初始化）
+_welcome_llm = None
+
+
+def _get_welcome_llm():
+    """获取 Welcome 端点专用的 LLM 实例（单例模式）"""
+    global _welcome_llm
+    if _welcome_llm is None:
+        from .utils.llm_wrapper import create_self_healing_llm
+
+        _welcome_llm = create_self_healing_llm(
+            model="gemini-3-flash-preview",
+            temperature=0.3,
+            request_timeout=30,
+            max_retries=2,
+        )
+    return _welcome_llm
+
 
 def _get_trip_end_date(trip_id: str) -> str | None:
     """获取行程结束日期 (ISO 格式)"""
@@ -400,6 +418,12 @@ async def lifespan(app: FastAPI):
             await cleanup_task
         except asyncio.CancelledError:
             pass
+
+        # 关闭异步 HTTP 客户端（天气 API 连接池）
+        from .tools._weather_api import close_async_client
+
+        await close_async_client()
+
         print("🛑 [Server] Shutting down...")
 
 
@@ -473,7 +497,7 @@ async def login(request: LoginRequest):
 
     if result:
         WELCOME_CACHE.clear()
-        print(f"🗑️ [Login] Customer login, cleared welcome cache")
+        print("🗑️ [Login] Customer login, cleared welcome cache")
         return LoginResponse(
             success=True,
             customer_id=result.get("id"),
@@ -785,6 +809,73 @@ def _get_trip_start_date(trip_id: str) -> str | None:
     return None
 
 
+# ==============================================================================
+# Async Helper Functions for /welcome Parallelization
+# ==============================================================================
+
+
+async def _get_customer_info_async(customer_id: str) -> dict | None:
+    """异步获取客户信息（在线程池中执行同步 Notion API）"""
+    import asyncio
+
+    from .tools.customer import get_customer_info
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_customer_info, customer_id)
+
+
+async def _get_itinerary_data_async(trip_id: str, config: dict) -> str:
+    """异步获取行程数据（在线程池中执行同步工具）"""
+    import asyncio
+
+    from .tools.itinerary import query_itinerary
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, query_itinerary.invoke, {}, config)
+
+
+async def _get_trip_location_async(trip_id: str) -> str:
+    """异步获取行程位置（在线程池中执行同步 Notion API）"""
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _get_trip_location, trip_id)
+
+
+async def _get_trip_dates_async(trip_id: str) -> tuple[str | None, str | None]:
+    """异步获取行程开始/结束日期（在线程池中执行同步 Notion API）"""
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    start_date, end_date = await asyncio.gather(
+        loop.run_in_executor(None, _get_trip_start_date, trip_id),
+        loop.run_in_executor(None, _get_trip_end_date, trip_id),
+    )
+    return start_date, end_date
+
+
+async def _get_weather_data_async(location: str, weather_date: str) -> str:
+    """异步获取天气数据（使用异步 HTTP 客户端）"""
+    from .tools._weather_api import get_location_weather_async
+
+    weather = await get_location_weather_async(location, weather_date)
+
+    if not weather:
+        return f"无法获取 {location} 在 {weather_date} 的天气信息"
+
+    if "error" in weather:
+        return f"天气查询失败: {weather.get('message', weather.get('error'))}"
+
+    output = f"【{location} 天气预报】({weather_date})\n"
+    output += f"天气: {weather.get('weather', '未知')}\n"
+    output += f"温度: {weather.get('temp_min', '?')}°C ~ {weather.get('temp_max', '?')}°C\n"
+    output += f"降水概率: {weather.get('rain_probability', '?')}%\n"
+    if weather.get("wind_speed"):
+        output += f"风速: {weather.get('wind_speed')} m/s\n"
+
+    return output
+
+
 def _map_trip_status(notion_status: str) -> str:
     """将 Notion 项目状态映射为 API 状态
 
@@ -881,19 +972,21 @@ def _get_trip_destination(trip_id: str) -> str:
 async def welcome(request: Request, body: WelcomeRequest):
     """获取今日行程和天气，调用 LLM 生成欢迎消息
 
-    复用 main.py 的逻辑：
-    1. 直接调用工具获取数据（避免 Agent 推理延迟）
-    2. 构建 greeting_prompt 注入数据
-    3. 调用 graph.invoke 生成欢迎语
+    性能优化版本：
+    1. 并行获取客户信息、行程数据、位置信息、行程日期
+    2. 异步天气 API（连接池复用）
+    3. LLM 单例化（避免重复初始化）
+
+    预期延迟：从 15-25 秒降至 5-10 秒
     """
+    import asyncio
+    import time
     import uuid
     from datetime import datetime
 
     from langchain_core.messages import HumanMessage
 
-    from .tools.customer import get_customer_info
-    from .tools.itinerary import query_itinerary
-    from .tools.weather import query_weather
+    start_time = time.time()
 
     # 0. 验证日期格式
     try:
@@ -920,30 +1013,51 @@ async def welcome(request: Request, body: WelcomeRequest):
     today_iso = body.date
     current_date = _format_date_cn(body.date)
 
-    # 1. 获取客户信息 (customer_id="admin" 表示管理员模式)
+    # 1. 生成 thread_id 和基础 config（不依赖异步数据）
+    thread_id = str(uuid.uuid4())
+    is_admin = body.customer_id.lower() == "admin"
+
+    # 2. 第一阶段并行：客户信息 + 行程日期 + 位置
+    # 这些是相互独立的 Notion 查询，可以并行执行
+    phase1_tasks = [
+        _get_trip_dates_async(body.trip_id),      # (start_date, end_date)
+        _get_trip_location_async(body.trip_id),   # location string
+    ]
+
+    # 非管理员模式时，并行获取客户信息
+    if not is_admin:
+        phase1_tasks.append(_get_customer_info_async(body.customer_id))
+
+    phase1_results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
+
+    # 解析第一阶段结果
+    trip_dates = phase1_results[0] if not isinstance(phase1_results[0], Exception) else (None, None)
+    trip_start, trip_end_date = trip_dates
+
+    location = phase1_results[1] if not isinstance(phase1_results[1], Exception) else "Unknown"
+    if isinstance(location, Exception):
+        print(f"❌ [Welcome] location error: {location}")
+        location = "Unknown"
+
+    # 客户信息处理
     customer_name = "管理员"
     customer_info = None
-    is_admin = body.customer_id.lower() == "admin"
-    if not is_admin:
-        customer_info = get_customer_info(body.customer_id)
+    if not is_admin and len(phase1_results) > 2:
+        customer_info = phase1_results[2] if not isinstance(phase1_results[2], Exception) else None
         if customer_info:
             customer_name = customer_info.get("name", "客户")
 
-    # 2. 构建 config
-    thread_id = str(uuid.uuid4())
+    phase1_time = time.time() - start_time
+    print(f"⏱️ [Welcome] Phase 1 (parallel Notion queries): {phase1_time:.2f}s")
 
-    # 获取行程结束日期用于缓存过期
-    trip_end_date = _get_trip_end_date(body.trip_id)
-
-    # 缓存会话上下文，供后续 /agent/invoke 使用
+    # 3. 缓存会话上下文
     SESSION_CONTEXT[thread_id] = {
-        "date": current_date,  # 中文格式
+        "date": current_date,
         "trip_id": body.trip_id,
         "customer_id": body.customer_id,
-        "expires_after": trip_end_date,  # 行程结束日期，用于过期清理
+        "expires_after": trip_end_date,
     }
 
-    # 注册到行程会话映射（用于批量清理）
     if body.trip_id not in TRIP_SESSIONS:
         TRIP_SESSIONS[body.trip_id] = set()
     TRIP_SESSIONS[body.trip_id].add(thread_id)
@@ -958,47 +1072,51 @@ async def welcome(request: Request, body: WelcomeRequest):
         }
     }
 
-    # 3. 获取行程数据
-    try:
-        itinerary_data = query_itinerary.invoke({}, config=config)
-        print(f"📋 [Welcome] itinerary_data: {str(itinerary_data)[:200]}")
-    except Exception as e:
-        itinerary_data = f"行程数据获取失败: {e}"
-        print(f"❌ [Welcome] itinerary error: {e}")
-
-    # 4. 自动获取位置并查询天气
-    location = _get_trip_location(body.trip_id)
-    print(f"📍 [Welcome] location: {location}")
-
-    # 确定天气查询日期
-    trip_start = _get_trip_start_date(body.trip_id)
+    # 4. 确定天气查询日期
     if trip_start and today_iso < trip_start:
-        # 行程未开始：检查是否在 10 天内
         days_until_trip = (datetime.strptime(trip_start, "%Y-%m-%d") -
                           datetime.strptime(today_iso, "%Y-%m-%d")).days
         if days_until_trip <= 10:
-            weather_date = trip_start  # 10天内可预报，查行程第一天
+            weather_date = trip_start
             print(f"🗓️ [Welcome] 行程未开始，{days_until_trip}天后出发，查询行程首日天气: {weather_date}")
         else:
-            weather_date = today_iso  # 超过10天，查当天（无法预报那么远）
+            weather_date = today_iso
             print(f"🗓️ [Welcome] 行程未开始，{days_until_trip}天后出发，查询当天天气: {weather_date}")
     else:
-        weather_date = today_iso  # 行程已开始，用前端日期
+        weather_date = today_iso
         print(f"🗓️ [Welcome] 行程进行中，查询当天天气: {weather_date}")
 
-    try:
-        weather_data = query_weather.invoke({"location": location, "date": weather_date})
-        print(f"🌤️ [Welcome] weather_data: {str(weather_data)[:200]}")
-    except Exception as e:
-        weather_data = f"天气数据获取失败: {e}"
-        print(f"❌ [Welcome] weather error: {e}")
+    # 5. 第二阶段并行：行程数据 + 天气数据
+    # 这两个查询可以同时进行
+    phase2_start = time.time()
 
-    # 5. 构建 greeting_prompt（明确日期信息 + 详细服务介绍）
-    # 格式化行程开始日期为中文
+    itinerary_task = _get_itinerary_data_async(body.trip_id, config)
+    weather_task = _get_weather_data_async(location, weather_date)
+
+    itinerary_data, weather_data = await asyncio.gather(
+        itinerary_task, weather_task, return_exceptions=True
+    )
+
+    # 处理异常结果
+    if isinstance(itinerary_data, Exception):
+        print(f"❌ [Welcome] itinerary error: {itinerary_data}")
+        itinerary_data = f"行程数据获取失败: {itinerary_data}"
+    else:
+        print(f"📋 [Welcome] itinerary_data: {str(itinerary_data)[:200]}")
+
+    if isinstance(weather_data, Exception):
+        print(f"❌ [Welcome] weather error: {weather_data}")
+        weather_data = f"天气数据获取失败: {weather_data}"
+    else:
+        print(f"🌤️ [Welcome] weather_data: {str(weather_data)[:200]}")
+
+    phase2_time = time.time() - phase2_start
+    print(f"⏱️ [Welcome] Phase 2 (itinerary + weather parallel): {phase2_time:.2f}s")
+
+    # 6. 构建 greeting_prompt
     trip_start_cn = _format_date_cn(trip_start) if trip_start else "未知"
     weather_date_cn = _format_date_cn(weather_date)
     weather_type = "行程首日预报" if weather_date != today_iso else "当天天气"
-    # 简化地点显示
     location_short = location[:50] + "..." if len(location) > 50 else location
 
     greeting_prompt = f"""[系统指令] 为 {customer_name} 生成欢迎语
@@ -1027,19 +1145,12 @@ async def welcome(request: Request, body: WelcomeRequest):
 
 注意：直接生成回复，不需要调用工具。"""
 
-    # 6. 调用 Self-Healing LLM 生成欢迎语
+    # 7. 调用 LLM 生成欢迎语（使用单例）
+    phase3_start = time.time()
     try:
-        from .utils.llm_wrapper import create_self_healing_llm
-
-        llm = create_self_healing_llm(
-            model="gemini-3-flash-preview",
-            temperature=0.3,
-            request_timeout=30,
-            max_retries=2,
-        )
+        llm = _get_welcome_llm()
         response = await llm.ainvoke([HumanMessage(content=greeting_prompt)])
 
-        # 调试日志
         content = response.content
         content_preview = str(content)[:200] if content else "EMPTY"
         print(f"🔍 [Welcome] LLM response type: {type(content).__name__}, preview: {content_preview}")
@@ -1051,7 +1162,12 @@ async def welcome(request: Request, body: WelcomeRequest):
             error=f"生成欢迎消息失败: {e}",
         )
 
-    # 验证 greeting 内容有效性（不缓存空内容）
+    phase3_time = time.time() - phase3_start
+    total_time = time.time() - start_time
+    print(f"⏱️ [Welcome] Phase 3 (LLM generation): {phase3_time:.2f}s")
+    print(f"⏱️ [Welcome] Total time: {total_time:.2f}s")
+
+    # 验证 greeting 内容有效性
     if not greeting or not greeting.strip():
         print("⚠️ [Welcome] Empty greeting, skipping cache")
         return WelcomeResponse(
@@ -1059,7 +1175,7 @@ async def welcome(request: Request, body: WelcomeRequest):
             error="生成欢迎消息失败：LLM 返回空内容",
         )
 
-    # 写入缓存（仅缓存有效内容）
+    # 写入缓存
     _set_welcome_cache(cache_key, greeting, customer_name, thread_id)
     print(f"📝 [Welcome] Cache set: {cache_key}, expires in 3h")
 
