@@ -1,14 +1,7 @@
 """ReAct Agent 图定义
 
 使用 LangGraph 的 create_react_agent 构建单一 ReAct Agent。
-
-支持两种模式：
-1. 动态配置模式（推荐）：create_graph() - 不绑定 trip_id/customer_id
-   - 运行时通过 config["configurable"] 传递参数
-   - 适用于多租户服务端
-
-2. 静态配置模式（兼容）：create_graph_static() - 构建时绑定参数
-   - 适用于 CLI 等单行程场景
+运行时通过 config["configurable"] 传递 trip_id/customer_id 等参数。
 """
 
 import sqlite3
@@ -21,7 +14,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.prebuilt import create_react_agent
 
 from .utils.llm_wrapper import create_self_healing_llm
-from .prompts import create_system_prompt, prompt_factory
+from .prompts import prompt_factory
 from .state import ReactAgentState
 from .tools import get_all_tools
 from .utils.debug import debug_print
@@ -121,71 +114,3 @@ def get_graph(
             db_path=db_path,
         )
     return _graph_instance
-
-
-def create_graph_static(
-    trip_id: str,
-    customer_id: str = "",
-    customer_info: dict | None = None,
-    current_date: str = "",
-    model: str = "gemini-3-flash-preview",
-    checkpointer: Any = None,
-    db_path: str = "/app/data/checkpoints.db",
-):
-    """创建静态绑定的 ReAct Agent 图（兼容旧代码）
-
-    此函数保留原有的构建时绑定行为，适用于：
-    - CLI 模式（单一行程）
-    - 需要向后兼容的场景
-
-    注意：新代码应优先使用 create_graph() + 动态配置模式。
-
-    Args:
-        trip_id: 行程 ID
-        customer_id: 客户 ID（空字符串表示管理员模式）
-        customer_info: 客户信息缓存（可选）
-        current_date: 当前日期字符串
-        model: Gemini 模型 ID
-        checkpointer: 检查点管理器（"memory", "sqlite" 或实例）
-        db_path: SQLite 数据库路径（仅当 checkpointer="sqlite" 时使用）
-
-    Returns:
-        编译后的 LangGraph 图（绑定到特定 trip）
-    """
-    debug_print(f"[Graph] 创建静态绑定图: trip={trip_id[:8]}..., model={model}")
-
-    llm = create_self_healing_llm(
-        model=model,
-        temperature=0.1,
-        request_timeout=60,
-        max_retries=2,
-    )
-
-    # 静态模式仍然使用相同的工具，但通过 config 传递参数
-    tools = get_all_tools()
-    debug_print(f"[Graph] 已注册 {len(tools)} 个工具")
-
-    # 静态模式使用预生成的 System Prompt
-    system_prompt = create_system_prompt(
-        trip_id=trip_id,
-        customer_id=customer_id,
-        current_date=current_date,
-        customer_info=customer_info,
-    )
-
-    if checkpointer == "sqlite":
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
-    elif checkpointer == "memory":
-        checkpointer = MemorySaver()
-
-    compiled = create_react_agent(
-        model=llm,
-        tools=tools,
-        state_schema=ReactAgentState,
-        prompt=system_prompt,
-        checkpointer=checkpointer,
-    )
-
-    debug_print("[Graph] 静态绑定图创建完成")
-    return compiled

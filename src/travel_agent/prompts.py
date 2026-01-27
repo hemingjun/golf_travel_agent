@@ -1,9 +1,7 @@
 """ReAct Agent System Prompt
 
 定义 ReAct Agent 的核心行为准则和工具使用指南。
-支持两种模式：
-1. 静态模式：create_system_prompt() - 图创建时生成（兼容旧代码）
-2. 动态模式：prompt_factory() - 运行时从 config 生成（推荐）
+使用 prompt_factory() 在运行时从 config 动态生成 System Prompt。
 """
 
 from langchain_core.messages import (
@@ -82,45 +80,6 @@ def _convert_message(msg: BaseMessage) -> BaseMessage:
     else:
         # 默认当作 HumanMessage
         return HumanMessage(content=content)
-
-
-def create_system_prompt(
-    trip_id: str,
-    customer_id: str,
-    current_date: str,
-    customer_info: dict | None = None,
-) -> str:
-    """根据状态动态生成 System Prompt
-
-    Args:
-        trip_id: 行程 ID
-        customer_id: 客户 ID
-        current_date: 当前日期
-        customer_info: 客户信息（可选）
-
-    Returns:
-        格式化后的 System Prompt
-    """
-    customer_name = "客户"
-    mode = "管理员模式"
-
-    # admin 模式检查：customer_id 为空或 "admin" 时为管理员模式
-    is_admin = not customer_id or customer_id.lower() == "admin"
-
-    if not is_admin and customer_info:
-        customer_name = customer_info.get("name", "客户")
-        mode = "客户模式"
-    elif not is_admin:
-        mode = "客户模式"
-    else:
-        customer_name = "管理员"
-
-    return REACT_SYSTEM_PROMPT.format(
-        current_date=current_date,
-        trip_id=trip_id[:8] + "..." if len(trip_id) > 8 else trip_id,
-        customer_name=customer_name,
-        mode=mode,
-    )
 
 
 def prompt_factory(state: dict, config: dict) -> list:

@@ -51,8 +51,7 @@ uv run ruff format .             # 代码格式化
 源代码位于 `src/travel_agent/` 目录：
 
 **graph.py** - 图创建入口:
-- `create_graph()`: 动态配置模式（推荐），运行时通过 `config["configurable"]` 传递 trip_id/customer_id
-- `create_graph_static()`: 静态绑定模式（CLI 兼容），构建时绑定参数
+- `create_graph()`: 运行时通过 `config["configurable"]` 传递 trip_id/customer_id
 - `get_graph()`: 单例模式（服务端使用）
 
 **state.py** - 简化状态定义:
@@ -67,7 +66,6 @@ uv run ruff format .             # 代码格式化
 
 **prompts.py** - System Prompt:
 - `prompt_factory()`: 运行时从 config 动态生成（用 RunnableLambda 包装）
-- `create_system_prompt()`: 静态生成（CLI 兼容）
 - 包含隐私保护规则：客户模式下禁止透露其他客户信息
 
 **server.py** - FastAPI + LangServe 服务端:
