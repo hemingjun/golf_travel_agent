@@ -708,15 +708,17 @@ def _extract_text_content(content) -> str:
 
 
 def _get_trip_location(trip_id: str) -> str:
-    """从行程中提取位置信息（返回第一个酒店或球场地址）
+    """从行程中提取位置信息（用于天气查询）
 
-    行程目的地通常固定，直接返回第一个酒店/球场地址即可。
+    优先级：
+    1. 酒店地址（最精确）
+    2. 球场地址
+    3. 行程目的地名称（从行程名称提取）
     """
     from .tools._utils import _extract_text
     from .utils.notion import DATABASES, get_client
 
     client = get_client()
-    default_location = "Los Cabos, Mexico"
 
     # 1. 优先查询酒店地址
     try:
@@ -753,8 +755,14 @@ def _get_trip_location(trip_id: str) -> str:
     except Exception as e:
         print(f"[Location] 查询球场失败: {e}")
 
-    print("[Location] 使用默认地址")
-    return default_location
+    # 3. 降级：从行程名称提取目的地
+    destination = _get_trip_destination(trip_id)
+    if destination:
+        print(f"[Location] 使用行程目的地: {destination}")
+        return destination
+
+    print("[Location] 无法获取位置信息")
+    return "Unknown"
 
 
 def _get_trip_start_date(trip_id: str) -> str | None:
