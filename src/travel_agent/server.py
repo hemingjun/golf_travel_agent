@@ -452,6 +452,8 @@ async def login(request: LoginRequest):
     """
     # Admin 快捷登录 - 跳过生日验证
     if request.full_name.lower() == "admin":
+        WELCOME_CACHE.clear()
+        print("🗑️ [Login] Admin login, cleared welcome cache")
         return LoginResponse(
             success=True,
             customer_id="admin",
@@ -470,6 +472,8 @@ async def login(request: LoginRequest):
     )
 
     if result:
+        WELCOME_CACHE.clear()
+        print(f"🗑️ [Login] Customer login, cleared welcome cache")
         return LoginResponse(
             success=True,
             customer_id=result.get("id"),
