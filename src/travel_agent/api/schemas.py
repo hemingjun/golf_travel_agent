@@ -80,3 +80,20 @@ class CustomerTripsResponse(BaseModel):
     success: bool
     trips: list[CustomerTripInfo] = []
     error: str | None = None
+
+
+class SessionMessage(BaseModel):
+    """对话历史中的单条消息"""
+
+    id: str
+    role: str  # "user" | "assistant"
+    content: str
+    created_at: str | None = None
+
+
+class SessionMessagesResponse(BaseModel):
+    """获取对话历史响应"""
+
+    success: bool
+    messages: list[SessionMessage] = []
+    error: str | None = None

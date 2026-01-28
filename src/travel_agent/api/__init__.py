@@ -9,6 +9,8 @@ from .schemas import (
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    SessionMessage,
+    SessionMessagesResponse,
     TripInfo,
     UpcomingTripsResponse,
     WelcomeRequest,
@@ -25,4 +27,6 @@ __all__ = [
     "UpcomingTripsResponse",
     "CustomerTripInfo",
     "CustomerTripsResponse",
+    "SessionMessage",
+    "SessionMessagesResponse",
 ]

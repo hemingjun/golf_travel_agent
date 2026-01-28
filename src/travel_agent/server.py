@@ -27,6 +27,8 @@ from .api import (
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    SessionMessage,
+    SessionMessagesResponse,
     TripInfo,
     UpcomingTripsResponse,
     WelcomeRequest,
@@ -397,6 +399,94 @@ async def welcome(body: WelcomeRequest):
         date=body.date,
     )
     return WelcomeResponse(**result)
+
+
+@app.get("/sessions/{thread_id}/messages", response_model=SessionMessagesResponse)
+async def get_session_messages(thread_id: str):
+    """获取对话的历史消息
+
+    Args:
+        thread_id: 对话线程 ID（通常等于 trip_id）
+
+    Returns:
+        该对话的所有历史消息
+    """
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+
+    def _convert_message(msg: BaseMessage) -> BaseMessage:
+        """将泛型 BaseMessage 转换为具体类型
+
+        从 checkpointer 恢复的消息可能是泛型 BaseMessage，
+        需要通过 msg.type 属性判断并转换为具体类型。
+        """
+        if isinstance(msg, (HumanMessage, AIMessage)):
+            return msg
+
+        msg_type = getattr(msg, "type", None)
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        msg_id = getattr(msg, "id", None)
+
+        if msg_type == "human":
+            return HumanMessage(content=content, id=msg_id)
+        elif msg_type == "ai":
+            return AIMessage(content=content, id=msg_id)
+        return msg
+
+    try:
+        graph = app.state.graph
+        config = {"configurable": {"thread_id": thread_id}}
+        state = await graph.aget_state(config)
+
+        if not state.values:
+            return SessionMessagesResponse(success=True, messages=[])
+
+        raw_messages = state.values.get("messages", [])
+
+        # 关键修复：先将泛型 BaseMessage 转换为具体类型
+        raw_messages = [_convert_message(m) for m in raw_messages]
+
+        messages = []
+
+        for msg in raw_messages:
+            # 只处理用户和助手消息，跳过系统消息和工具消息
+            if isinstance(msg, HumanMessage):
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                messages.append(
+                    SessionMessage(
+                        id=msg.id or "",
+                        role="user",
+                        content=content,
+                    )
+                )
+            elif isinstance(msg, AIMessage):
+                # 提取文本内容
+                if isinstance(msg.content, str):
+                    content = msg.content
+                elif isinstance(msg.content, list):
+                    # 处理多部分内容（文本 + 工具调用）
+                    text_parts = [
+                        part.get("text", "") if isinstance(part, dict) else str(part)
+                        for part in msg.content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                        or isinstance(part, str)
+                    ]
+                    content = "".join(text_parts)
+                else:
+                    content = str(msg.content)
+
+                # 跳过空消息（通常是纯工具调用）
+                if content.strip():
+                    messages.append(
+                        SessionMessage(
+                            id=msg.id or "",
+                            role="assistant",
+                            content=content,
+                        )
+                    )
+
+        return SessionMessagesResponse(success=True, messages=messages)
+    except Exception as e:
+        return SessionMessagesResponse(success=False, error=str(e))
 
 
 # =============================================================================
