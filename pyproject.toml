@@ -20,6 +20,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=2.0.0",
     "langserve[server]>=0.3.0",
     "aiosqlite>=0.22.1",
+    "tenacity>=8.2.0",
 ]
 
 [project.scripts]

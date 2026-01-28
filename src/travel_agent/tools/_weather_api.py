@@ -6,6 +6,11 @@
 提供同步和异步两种接口:
 - get_location_weather(): 同步版本，供 LangChain 工具使用
 - get_location_weather_async(): 异步版本，供 server.py 直接调用
+
+优化特性:
+- 指数退避重试（最多 3 次）
+- 降级到默认天气数据
+- 缩短超时时间提升响应速度
 """
 
 import os
@@ -14,6 +19,7 @@ from threading import Lock
 
 import httpx
 from cachetools import TTLCache
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 GOOGLE_WEATHER_URL = "https://weather.googleapis.com/v1"
 GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -35,7 +41,7 @@ async def _get_async_client() -> httpx.AsyncClient:
     global _async_http_client
     if _async_http_client is None:
         _async_http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(15.0, connect=5.0),
+            timeout=httpx.Timeout(8.0, connect=3.0),  # 缩短超时：15s → 8s
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
     return _async_http_client
@@ -52,6 +58,23 @@ async def close_async_client():
 def _weather_cache_key(location: str, date: str) -> str:
     """生成天气缓存 key"""
     return f"{location.lower().strip()}:{date}"
+
+
+def _get_default_weather(location: str, target_date: str) -> dict:
+    """默认天气数据（用于 API 完全失败时的降级）
+
+    返回温和天气作为安全默认值，避免用户体验中断。
+    """
+    return {
+        "date": target_date,
+        "weather": "晴间多云",
+        "temp_max": 25,
+        "temp_min": 15,
+        "wind_speed": 3.0,
+        "rain_probability": 10,
+        "_fallback": True,  # 标记这是降级数据
+        "_note": f"（{location} 天气数据暂不可用，显示默认值）",
+    }
 
 
 def _get_google_api_key() -> str | None:
@@ -181,10 +204,25 @@ def _get_weather_by_coords(lat: float, lon: float, target_date: str) -> dict | N
         return None
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException)),
+    reraise=True,
+)
+async def _fetch_weather_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> dict:
+    """带重试的天气 API 请求"""
+    resp = await client.get(url, params=params)
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def _get_weather_by_coords_async(
     lat: float, lon: float, target_date: str
 ) -> dict | None:
     """通过经纬度获取天气预报（使用 Google Weather API）- 异步版本
+
+    带指数退避重试（最多 3 次），失败时返回 None。
 
     Args:
         lat: 纬度
@@ -208,13 +246,11 @@ async def _get_weather_by_coords_async(
 
     try:
         client = await _get_async_client()
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+        data = await _fetch_weather_with_retry(client, url, params)
         return _parse_weather_response(data, target_date)
 
     except httpx.HTTPError as e:
-        print(f"[Weather API Async] HTTP error: {e}")
+        print(f"[Weather API Async] HTTP error after retries: {e}")
         return None
     except Exception as e:
         print(f"[Weather API Async] Error: {e}")
@@ -304,14 +340,17 @@ def get_location_weather(location: str, target_date: str) -> dict | None:
     return weather
 
 
-async def get_location_weather_async(location: str, target_date: str) -> dict | None:
+async def get_location_weather_async(
+    location: str, target_date: str, use_fallback: bool = True
+) -> dict | None:
     """便捷方法：通过地名直接获取天气（支持中文）- 异步版本
 
-    使用连接池复用 HTTP 连接，比同步版本更快。
+    使用连接池复用 HTTP 连接，带重试和降级机制。
 
     Args:
         location: 地名（支持中文，如 "温哥华", "Los Cabos", "北京"）
         target_date: 目标日期 (YYYY-MM-DD)
+        use_fallback: 失败时是否返回默认天气（默认 True）
 
     Returns:
         天气信息字典，或包含 error/message 的错误字典
@@ -324,6 +363,9 @@ async def get_location_weather_async(location: str, target_date: str) -> dict | 
 
     # 2. API Key 检查
     if not _get_google_api_key():
+        if use_fallback:
+            print(f"[Weather] No API key, using fallback for {location}")
+            return _get_default_weather(location, target_date)
         return {
             "error": "no_api_key",
             "message": "天气服务未配置（缺少 GOOGLE_MAPS_API_KEY）",
@@ -338,11 +380,21 @@ async def get_location_weather_async(location: str, target_date: str) -> dict | 
     # 4. 获取经纬度（Google Geocoding API）- 异步
     coords = await _get_lat_lon_async(location)
     if not coords:
+        if use_fallback:
+            print(f"[Weather] Geocoding failed for {location}, using fallback")
+            return _get_default_weather(location, target_date)
         return {"error": "location_not_found", "message": f"无法识别地名: {location}"}
 
-    # 5. 获取天气（Google Weather API）- 异步
+    # 5. 获取天气（Google Weather API）- 异步，带重试
     weather = await _get_weather_by_coords_async(coords[0], coords[1], target_date)
     if not weather:
+        if use_fallback:
+            print(f"[Weather] API failed for {location}, using fallback")
+            fallback = _get_default_weather(location, target_date)
+            # 降级数据也缓存，但 TTL 较短（由 TTLCache 统一管理）
+            with WEATHER_LOCK:
+                WEATHER_CACHE[cache_key] = fallback
+            return fallback
         return {
             "error": "weather_not_found",
             "message": f"无法获取 {location} 在 {target_date} 的天气",

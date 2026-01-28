@@ -4,6 +4,11 @@
 - 行程数据获取
 - 天气查询
 - LLM 欢迎语生成
+
+优化特性：
+- 共享缓存层：行程+日期维度的数据缓存，多客户共享
+- 分层缓存：完整 Welcome 缓存 > 共享数据缓存 > API 调用
+- 预期性能：缓存命中 <100ms，共享命中 1-2s，首次 2-4s
 """
 
 import asyncio
@@ -26,15 +31,25 @@ _welcome_llm = None
 
 
 def _get_welcome_llm():
-    """获取 Welcome 专用的 LLM 实例"""
+    """获取 Welcome 专用的 LLM 实例
+
+    优化配置：
+    - 使用更快的模型：gemini-2.0-flash
+    - 缩短超时时间：30s → 12s（欢迎语不需要太长）
+    - 减少重试次数：2 → 1（快速失败，避免用户等待）
+    - 禁用 fallback：Welcome 场景简单，不需要复杂的降级逻辑
+    - 限制输出长度：512 tokens（欢迎语简洁为主）
+    """
     global _welcome_llm
     if _welcome_llm is None:
         from ..utils.llm_wrapper import create_self_healing_llm
         _welcome_llm = create_self_healing_llm(
-            model="gemini-3-flash-preview",
+            model="gemini-2.0-flash",  # 使用更快的稳定版本
+            fallback_model=None,       # 禁用 fallback，减少延迟
             temperature=0.3,
-            request_timeout=30,
-            max_retries=2,
+            request_timeout=12,        # 缩短超时
+            max_retries=1,             # 减少重试
+            max_output_tokens=512,     # 限制输出长度
         )
     return _welcome_llm
 
@@ -201,12 +216,122 @@ class WelcomeService:
         return output
 
     @staticmethod
+    async def _get_shared_data(trip_id: str, date: str) -> dict:
+        """获取共享数据（多客户共享）
+
+        共享数据包含行程信息和天气数据，对同一行程的所有客户都相同。
+        优先从共享缓存获取，缓存未命中时并行获取。
+
+        Returns:
+            {
+                "trip_dates": (start, end),
+                "location": str,
+                "itinerary": str,
+                "weather": str,
+                "weather_date": str,
+            }
+        """
+        shared_key = cache_manager.get_shared_data_key(trip_id, date)
+
+        # 1. 检查共享缓存
+        cached = cache_manager.get_shared_data(shared_key)
+        if cached:
+            print(f"[Welcome] Shared cache HIT: {shared_key[:40]}...")
+            return cached
+
+        print(f"[Welcome] Shared cache MISS: {shared_key[:40]}...")
+
+        # 2. 并行获取共享数据
+        trip_dates_task = WelcomeService.get_trip_dates_async(trip_id)
+        location_task = WelcomeService.get_trip_location_async(trip_id)
+
+        # 先获取日期和位置（用于确定天气查询参数）
+        trip_dates, location = await asyncio.gather(
+            trip_dates_task, location_task, return_exceptions=True
+        )
+
+        if isinstance(trip_dates, Exception):
+            trip_dates = (None, None)
+        if isinstance(location, Exception):
+            location = "Unknown"
+
+        trip_start, trip_end = trip_dates
+
+        # 确定天气查询日期
+        if trip_start and date < trip_start:
+            days_until_trip = (datetime.strptime(trip_start, "%Y-%m-%d") -
+                              datetime.strptime(date, "%Y-%m-%d")).days
+            weather_date = trip_start if days_until_trip <= 10 else date
+        else:
+            weather_date = date
+
+        # 构建行程查询 config（不包含 customer_info，共享数据不需要）
+        config = {
+            "configurable": {
+                "thread_id": f"shared-{trip_id}",
+                "trip_id": trip_id,
+                "current_date": _format_date_cn(date),
+            }
+        }
+
+        # 并行获取行程和天气
+        itinerary_task = WelcomeService.get_itinerary_data_async(trip_id, config)
+        weather_task = WelcomeService.get_weather_data_async(location, weather_date)
+
+        itinerary_data, weather_data = await asyncio.gather(
+            itinerary_task, weather_task, return_exceptions=True
+        )
+
+        if isinstance(itinerary_data, Exception):
+            itinerary_data = f"行程数据获取失败: {itinerary_data}"
+        if isinstance(weather_data, Exception):
+            weather_data = f"天气数据获取失败: {weather_data}"
+
+        # 3. 构建共享数据
+        shared_data = {
+            "trip_dates": trip_dates,
+            "location": location,
+            "itinerary": itinerary_data,
+            "weather": weather_data,
+            "weather_date": weather_date,
+        }
+
+        # 4. 缓存共享数据（1 小时）
+        cache_manager.set_shared_data(shared_key, shared_data)
+
+        return shared_data
+
+    @staticmethod
+    async def _get_customer_name_fast(customer_id: str) -> str:
+        """快速获取客户名称
+
+        这是个性化数据，每个客户独立。
+        由于 Notion 页面有缓存，通常 <100ms。
+        """
+        if customer_id.lower() == "admin":
+            return "管理员"
+
+        try:
+            customer_info = await WelcomeService.get_customer_info_async(customer_id)
+            if customer_info:
+                return customer_info.get("name", "客户")
+        except Exception as e:
+            print(f"[Welcome] Get customer name failed: {e}")
+
+        return "客户"
+
+    @staticmethod
     async def generate_greeting(
         trip_id: str,
         customer_id: str,
         date: str,
     ) -> dict:
         """生成欢迎消息
+
+        优化后的三层缓存策略：
+        1. 完整 Welcome 缓存：<100ms（客户维度）
+        2. 共享数据缓存：1-2s（行程+日期维度，只需 LLM 调用）
+        3. 无缓存：2-4s（完整流程）
 
         Returns:
             {
@@ -228,11 +353,13 @@ class WelcomeService:
                 "error": f"日期格式错误: {date}，应为 YYYY-MM-DD",
             }
 
-        # 检查缓存
+        # =====================================================================
+        # 第 1 层：完整 Welcome 缓存
+        # =====================================================================
         cache_key = cache_manager.get_welcome_cache_key(trip_id, customer_id, date)
         cached = cache_manager.get_welcome(cache_key)
         if cached:
-            print(f"[Welcome] Cache hit: {cache_key}")
+            print(f"[Welcome] Full cache HIT: {cache_key[:40]}... ({time.time() - start_time:.3f}s)")
             return {
                 "success": True,
                 "customer_name": cached["customer_name"],
@@ -242,36 +369,30 @@ class WelcomeService:
 
         today_iso = date
         current_date = _format_date_cn(date)
-
         thread_id = str(uuid.uuid4())
         is_admin = customer_id.lower() == "admin"
 
-        # 第一阶段并行：客户信息 + 行程日期 + 位置
-        phase1_tasks = [
-            WelcomeService.get_trip_dates_async(trip_id),
-            WelcomeService.get_trip_location_async(trip_id),
-        ]
-        if not is_admin:
-            phase1_tasks.append(WelcomeService.get_customer_info_async(customer_id))
+        # =====================================================================
+        # 第 2 层：共享数据缓存 + 客户名称
+        # =====================================================================
+        phase1_start = time.time()
 
-        phase1_results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
+        # 并行获取：共享数据 + 客户名称
+        shared_task = WelcomeService._get_shared_data(trip_id, date)
+        name_task = WelcomeService._get_customer_name_fast(customer_id)
 
-        trip_dates = phase1_results[0] if not isinstance(phase1_results[0], Exception) else (None, None)
+        shared_data, customer_name = await asyncio.gather(shared_task, name_task)
+
+        # 解析共享数据
+        trip_dates = shared_data["trip_dates"]
         trip_start, trip_end_date = trip_dates
+        location = shared_data["location"]
+        itinerary_data = shared_data["itinerary"]
+        weather_data = shared_data["weather"]
+        weather_date = shared_data["weather_date"]
 
-        location = phase1_results[1] if not isinstance(phase1_results[1], Exception) else "Unknown"
-        if isinstance(location, Exception):
-            location = "Unknown"
-
-        customer_name = "管理员"
-        customer_info = None
-        if not is_admin and len(phase1_results) > 2:
-            customer_info = phase1_results[2] if not isinstance(phase1_results[2], Exception) else None
-            if customer_info:
-                customer_name = customer_info.get("name", "客户")
-
-        phase1_time = time.time() - start_time
-        print(f"[Welcome] Phase 1: {phase1_time:.2f}s")
+        phase1_time = time.time() - phase1_start
+        print(f"[Welcome] Phase 1 (shared+name): {phase1_time:.2f}s")
 
         # 缓存会话上下文
         cache_manager.set_session(
@@ -282,40 +403,10 @@ class WelcomeService:
             expires_after=trip_end_date,
         )
 
-        config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "trip_id": trip_id,
-                "customer_id": customer_id,
-                "customer_info": customer_info,
-                "current_date": current_date,
-            }
-        }
-
-        # 确定天气查询日期
-        if trip_start and today_iso < trip_start:
-            days_until_trip = (datetime.strptime(trip_start, "%Y-%m-%d") -
-                              datetime.strptime(today_iso, "%Y-%m-%d")).days
-            weather_date = trip_start if days_until_trip <= 10 else today_iso
-        else:
-            weather_date = today_iso
-
-        # 第二阶段并行：行程数据 + 天气数据
+        # =====================================================================
+        # 第 3 层：LLM 生成
+        # =====================================================================
         phase2_start = time.time()
-        itinerary_task = WelcomeService.get_itinerary_data_async(trip_id, config)
-        weather_task = WelcomeService.get_weather_data_async(location, weather_date)
-
-        itinerary_data, weather_data = await asyncio.gather(
-            itinerary_task, weather_task, return_exceptions=True
-        )
-
-        if isinstance(itinerary_data, Exception):
-            itinerary_data = f"行程数据获取失败: {itinerary_data}"
-        if isinstance(weather_data, Exception):
-            weather_data = f"天气数据获取失败: {weather_data}"
-
-        phase2_time = time.time() - phase2_start
-        print(f"[Welcome] Phase 2: {phase2_time:.2f}s")
 
         # 构建 greeting_prompt
         trip_start_cn = _format_date_cn(trip_start) if trip_start else "未知"
@@ -345,7 +436,6 @@ class WelcomeService:
 注意：直接生成回复，不需要调用工具。"""
 
         # 调用 LLM
-        phase3_start = time.time()
         try:
             llm = _get_welcome_llm()
             response = await llm.ainvoke([HumanMessage(content=greeting_prompt)])
@@ -356,9 +446,9 @@ class WelcomeService:
                 "error": f"生成欢迎消息失败: {e}",
             }
 
-        phase3_time = time.time() - phase3_start
+        phase2_time = time.time() - phase2_start
         total_time = time.time() - start_time
-        print(f"[Welcome] Phase 3: {phase3_time:.2f}s, Total: {total_time:.2f}s")
+        print(f"[Welcome] Phase 2 (LLM): {phase2_time:.2f}s, Total: {total_time:.2f}s")
 
         if not greeting or not greeting.strip():
             return {
@@ -366,7 +456,7 @@ class WelcomeService:
                 "error": "生成欢迎消息失败：LLM 返回空内容",
             }
 
-        # 写入缓存
+        # 写入完整 Welcome 缓存
         cache_manager.set_welcome(cache_key, greeting, customer_name, thread_id)
 
         return {

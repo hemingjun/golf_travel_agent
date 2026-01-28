@@ -165,7 +165,7 @@ def authenticate_customer_global(full_name: str, birthday: str) -> dict | None:
         birthday: 生日 (支持 YYYY-M-D 或 YYYY-MM-DD)
 
     Returns:
-        认证成功返回 {"id": customer_page_id, "name": customer_name}
+        认证成功返回 {"id": customer_page_id, "name": customer_name, "trip_ids": [...]}
         失败返回 None
     """
     normalized_birthday = _normalize_date(birthday)
@@ -194,7 +194,19 @@ def authenticate_customer_global(full_name: str, birthday: str) -> dict | None:
             # 使用 startswith 兼容输入缩写
             if normalized_notion.startswith(normalized_input):
                 debug_print(f"[Customer] 全局认证成功: {notion_name}")
-                return {"id": page["id"], "name": notion_name}
+
+                # 获取客户参加的行程 ID 列表（用于登录预热）
+                trip_ids = props.get("参加的行程", [])
+                if isinstance(trip_ids, list):
+                    trip_ids = [tid for tid in trip_ids if isinstance(tid, str)]
+                else:
+                    trip_ids = []
+
+                return {
+                    "id": page["id"],
+                    "name": notion_name,
+                    "trip_ids": trip_ids,
+                }
 
         debug_print(f"[Customer] 生日匹配但姓名不匹配: {full_name}, {birthday}")
         return None

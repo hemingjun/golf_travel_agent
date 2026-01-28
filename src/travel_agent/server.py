@@ -201,6 +201,30 @@ async def cache_stats():
     return cache_manager.stats()
 
 
+async def _preheat_welcome_cache(customer_id: str, trip_ids: list[str]):
+    """后台预热 Welcome 缓存
+
+    登录成功后异步执行，不阻塞登录响应。
+    预热用户即将参加的行程的 Welcome 消息。
+    """
+    from datetime import datetime as dt
+    today = dt.now().strftime("%Y-%m-%d")
+
+    for trip_id in trip_ids[:3]:  # 最多预热 3 个行程
+        try:
+            result = await WelcomeService.generate_greeting(
+                trip_id=trip_id,
+                customer_id=customer_id,
+                date=today,
+            )
+            if result.get("success"):
+                print(f"[Preheat] Welcome cached for trip {trip_id[:8]}...")
+            else:
+                print(f"[Preheat] Failed for trip {trip_id[:8]}...: {result.get('error')}")
+        except Exception as e:
+            print(f"[Preheat] Exception for trip {trip_id[:8]}...: {e}")
+
+
 @app.post("/auth/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
     """客户认证"""
@@ -221,9 +245,16 @@ async def login(request: LoginRequest):
 
     if result:
         cache_manager.invalidate_on_login()
+        customer_id = result.get("id")
+
+        # 异步预热 Welcome 缓存（不阻塞登录响应）
+        trip_ids = result.get("trip_ids", [])
+        if customer_id and trip_ids:
+            asyncio.create_task(_preheat_welcome_cache(customer_id, trip_ids))
+
         return LoginResponse(
             success=True,
-            customer_id=result.get("id"),
+            customer_id=customer_id,
             customer_name=result.get("name"),
         )
     return LoginResponse(success=False, error="未找到匹配的用户信息")
